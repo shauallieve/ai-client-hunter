@@ -22,39 +22,50 @@ from telethon.errors import FloodWaitError, RPCError
 from telethon.sessions import StringSession
 
 PUBLIC_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
-QUERIES = (
-    "нужен разработчик",
-    "ищем программиста",
-    "сделать сайт",
-    "нужен телеграм бот",
-    "разработать бота",
-    "нужен сайт",
-    "нужен бот",
-)
-SERVICES = (
-    "сайт", "лендинг", "бота", "ботов", "бот для", "чат-бот", "telegram", "телеграм", "crm",
-    "автоматизац", "веб-приложен", "разработчик", "программист",
-    "парсер", "api", "интеграц",
-)
-INTENT = (
-    "нужен", "нужна", "нужно", "ищем", "ищу", "требуется",
-    "сделать", "разработать", "создать", "заказать", "кто сможет",
-    "кто сделает", "помогите",
-)
-EXCLUDE = ("ищу работу", "ищу заказ", "предлагаю услуги", "делаю сайты на заказ")
-LIMIT_PER_QUERY = 18
-LIMIT_PER_RUN = 25
-MAX_AGE_HOURS = 48
-
-
-def suitable(text: str) -> bool:
+def suitable(text: str, search: dict) -> bool:
     content = text.lower()
+    include = search["includeAny"]
+    intent = search["intentAny"]
+    exclude = search["excludeAny"]
     return (
-        len(content) >= 35
-        and any(word in content for word in SERVICES)
-        and any(word in content for word in INTENT)
-        and not any(word in content for word in EXCLUDE)
+        len(text) >= search["minChars"]
+        and (not include or any(word.lower() in content for word in include))
+        and (not intent or any(word.lower() in content for word in intent))
+        and not any(word.lower() in content for word in exclude)
     )
+
+
+def fetch_search_config(config: dict) -> dict:
+    """Read the current criteria from Cloudflare before every scheduled scan."""
+    request = Request(
+        config["endpoint"] + "/api/telegram/search-config",
+        headers={"Accept": "application/json",
+                 "User-Agent": "AIClientHunter/1.2 public-job-search"},
+    )
+    try:
+        with urlopen(request, timeout=20) as response:
+            result = json.load(response)
+    except HTTPError as error:
+        raise RuntimeError(
+            f"Search settings API returned HTTP {error.code}. "
+            "Publish the latest Cloudflare Worker from GitHub before running the search."
+        ) from None
+    except (URLError, ValueError) as error:
+        raise RuntimeError("Could not load search settings from Cloudflare") from error
+    criteria = result.get("config")
+    required = ("queries","includeAny","intentAny","excludeAny",
+                "maxAgeHours","minChars","perQuery","maxLeads")
+    if not isinstance(criteria, dict) or any(k not in criteria for k in required):
+        raise RuntimeError("Cloudflare returned invalid search configuration")
+    if not isinstance(criteria["queries"], list) or not criteria["queries"]:
+        raise RuntimeError("Search configuration contains no queries")
+    print(
+        f"Search settings loaded: {len(criteria['queries'])} queries, "
+        f"up to {criteria['perQuery']} results each, {criteria['maxAgeHours']}h age limit, "
+        f"min {criteria['minChars']} characters.",
+        flush=True
+    )
+    return criteria
 
 
 def validate_telegram_session(value: str) -> str:
@@ -101,15 +112,15 @@ def validate_config() -> dict:
             "token": os.environ["TELEGRAM_IMPORT_TOKEN"], "endpoint": endpoint}
 
 
-async def collect(config: dict) -> list[dict]:
+async def collect(config: dict, search: dict) -> list[dict]:
     unique = {}
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=MAX_AGE_HOURS)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=search['maxAgeHours'])
     async with TelegramClient(StringSession(config["session"]),
                               config["api_id"], config["api_hash"],
                               flood_sleep_threshold=20) as client:
         if not await client.is_user_authorized():
             raise RuntimeError("Telegram session is no longer authorized")
-        for query in QUERIES:
+        for query in search['queries']:
             matched = 0
             examined = 0
             recent = 0
@@ -117,13 +128,13 @@ async def collect(config: dict) -> list[dict]:
             public_source = 0
             try:
                 async for message in client.iter_messages(None, search=query,
-                                                         limit=LIMIT_PER_QUERY):
+                                                         limit=search['perQuery']):
                     examined += 1
                     if not message or not message.date or message.date < cutoff:
                         continue
                     recent += 1
                     text = (message.raw_text or "").strip()[:1500]
-                    if not suitable(text) or message.fwd_from:
+                    if not suitable(text, search) or message.fwd_from:
                         continue
                     task_like += 1
                     chat = await message.get_chat()
@@ -152,7 +163,7 @@ async def collect(config: dict) -> list[dict]:
                         "contactUsername": contact,
                     }
                     matched += 1
-                    if len(unique) >= LIMIT_PER_RUN:
+                    if len(unique) >= search['maxLeads']:
                         break
             except FloodWaitError as error:
                 print(f"Rate limited by Telegram (wait {error.seconds}s); ending this run.")
@@ -163,7 +174,7 @@ async def collect(config: dict) -> list[dict]:
                 f"Query {query!r}: results={examined}, recent={recent}, "
                 f"job-like={task_like}, public-source={public_source}, selected={matched}"
             )
-            if len(unique) >= LIMIT_PER_RUN:
+            if len(unique) >= search['maxLeads']:
                 break
             await asyncio.sleep(2)
     return list(unique.values())
@@ -223,7 +234,8 @@ def submit(config: dict, leads: list[dict]) -> None:
 
 async def main() -> None:
     config = validate_config()
-    posts = await collect(config)
+    search = fetch_search_config(config)
+    posts = await collect(config, search)
     submit(config, posts)
 
 
