@@ -20,3 +20,5 @@ jobs:
         run: npm run build
       - name: Verify Cloudflare Worker syntax
         run: node --check worker.js
+      - name: Check Telegram Python scripts
+        run: python -m py_compile scripts/telegram_monitor.py scripts/telegram_login.py
