@@ -24,7 +24,7 @@ export default function App(){
  const [page,setPage]=useState<'leads'|'settings'>('leads');
  const [sort,setSort]=useState<'score'|'recent'>('recent');
  const [loading,setLoading]=useState(false),[error,setError]=useState(''),[updated,setUpdated]=useState('');
- const [telegramDiag,setTelegramDiag]=useState<{ok:boolean;botUsername?:string|null;webhookRegistered?:boolean;webhookMatchesExpected?:boolean;pendingUpdates?:number;lastDeliveryError?:string|null;reason?:string;detail?:string;nextStep?:string}|null>(null);
+ const [telegramDiag,setTelegramDiag]=useState<{ok:boolean;botUsername?:string|null;webhookRegistered?:boolean;webhookMatchesExpected?:boolean;pendingUpdates?:number;lastDeliveryError?:string|null;lastStart?:{at:string;replySent:boolean;error?:string|null}|null;reason?:string;detail?:string;nextStep?:string}|null>(null);
  const [telegramChecking,setTelegramChecking]=useState(false);
  const [selected,setSelected]=useState<TelegramLead|null>(null),[draft,setDraft]=useState('');
  useEffect(()=>{localStorage.setItem(STATUS_KEY,JSON.stringify(statuses))},[statuses]);
@@ -99,6 +99,8 @@ export default function App(){
         <p>Webhook: <b>{telegramDiag.webhookMatchesExpected?'Подключён':telegramDiag.webhookRegistered?'Подключён к другому адресу':'Не подключён'}</b></p>
         {typeof telegramDiag.pendingUpdates==='number'&&<p>Сообщений в очереди: {telegramDiag.pendingUpdates}</p>}
         {telegramDiag.lastDeliveryError&&<p className="text-orange-200">Ошибка Telegram: {telegramDiag.lastDeliveryError}</p>}
+        <p>Последняя команда /start: <b>{telegramDiag.lastStart?fmtDate(telegramDiag.lastStart.at):'Пока не получена'}</b></p>
+        {telegramDiag.lastStart&&<p>Ответ бота: <b>{telegramDiag.lastStart.replySent?'Отправлен':'Не отправлен'}</b>{telegramDiag.lastStart.error?' ('+telegramDiag.lastStart.error+')':''}</p>}
         {telegramDiag.detail&&<p className="text-orange-200">{telegramDiag.detail}</p>}
         {telegramDiag.nextStep&&<p className="text-muted">{telegramDiag.nextStep}</p>}
       </div>}
