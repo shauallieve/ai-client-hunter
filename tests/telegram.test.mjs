@@ -7,6 +7,7 @@ function fixture() {
   const env={
     DASHBOARD_TOKEN:'sample-a-secure-dashboard-token-for-testing-only',
     TELEGRAM_WEBHOOK_SECRET:'sample-telegram-secret',
+    TELEGRAM_IMPORT_TOKEN:'example-strong-import-token-abcde12345-very-long',
     LEAD_STORE:{
       idFromName(){return 'default'},
       get(){return {
@@ -92,4 +93,33 @@ test('destructive operations remain protected',async()=>{
   const {env}=fixture();
   const result=await worker.fetch(new Request(url+'/api/leads',{method:'DELETE',body:JSON.stringify({id:'x'})}),env);
   assert.equal(result.status,401);
+});
+
+test('public global-search import requires private key',async()=>{
+  const {env}=fixture();
+  const response=await worker.fetch(new Request(url+'/api/telegram/import',{
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({leads:[]})
+  }),env);
+  assert.equal(response.status,401);
+});
+test('public global-search only saves recent public job posts',async()=>{
+  const {env,data}=fixture();
+  const now=new Date().toISOString();
+  const leads=[
+    {url:'https://t.me/public_jobs_channel/123',description:'Ищем разработчика! Нужно сделать Telegram-бота для записи клиентов, бюджет обсуждается.',published:now,sourceChat:'Заказы',contactUsername:'public_customer'},
+    {url:'https://t.me/c/12345/456',description:'Нужен разработчик сделать сайт',published:now,sourceChat:'Private'},
+    {url:'https://t.me/public_jobs_channel/124',description:'Погода на этой неделе',published:now}
+  ];
+  const response=await worker.fetch(new Request(url+'/api/telegram/import',{
+    method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+env.TELEGRAM_IMPORT_TOKEN},
+    body:JSON.stringify({leads})
+  }),env);
+  assert.equal(response.status,200);
+  const result=await response.json();
+  assert.equal(result.saved,1);
+  assert.equal(result.rejected,2);
+  assert.equal(data.length,1);
+  assert.equal(data[0].contactUrl,'https://t.me/public_customer');
+  const feed=await worker.fetch(new Request(url+'/api/leads'),env);
+  assert.equal((await feed.json()).leads.length,1);
 });
