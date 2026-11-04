@@ -134,3 +134,14 @@ https://ai-client-hunter.kazatu2004-9ed.workers.dev/
 - Не обходи ограничения групп, не собирай содержимое приватных чатов и не рассылай массовые сообщения.
 - Сайт публичный: собранные открытые объявления видны всем посетителям.
 - Никому не отправляй API hash, строку сессии и секрет импорта.
+
+
+### Если GitHub Actions пишет "unpack requires a buffer of 275 bytes"
+
+Это означает, что секрет **TELEGRAM_SESSION** не соответствует формату Telethon StringSession — скорее всего, скопирован не полностью или перепутан с BotFather-токеном / API hash. Cloudflare и Telegram webhook здесь ни при чём.
+
+Открой GitHub Codespaces, в котором выполнялся скрипт авторизации. Если файл `.telegram_session.txt` остался, открой его командой `code .telegram_session.txt`; скопируй **всё содержимое одной строкой** (без кавычек, имени файла и поясняющих сообщений). Если файл удалён — повтори `python3 scripts/telegram_login.py` и снова авторизуй аккаунт.
+
+В GitHub → Settings → Secrets and variables → Actions обнови значение секрета `TELEGRAM_SESSION` (имя без изменений), затем снова запусти Workflow `Search Telegram public job posts`. Не публикуй строку сессии. Если сессия утекла, отзови её в Telegram → Settings → Devices.
+
+В скрипте теперь есть проверка целостности session string, поэтому следующая ошибка будет понятнее.
