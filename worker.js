@@ -1,6 +1,4 @@
-// Cloudflare Pages Advanced Mode.
-// Vite copies this file from public/ to dist/_worker.js.
-// This ensures /api/leads is handled even when Pages Functions directory is not discovered.
+// Cloudflare Workers: serves the API and the built React application's static assets.
 const FEEDS = [
   { name: 'Freelancehunt', url: 'https://freelancehunt.com/projects.rss' },
   { name: 'FL.ru', url: 'https://www.fl.ru/rss/all.xml' }
@@ -72,6 +70,7 @@ async function getLeads(request) {
 export default {
   async fetch(request,env) {
     const url=new URL(request.url);
+    if(url.pathname==='/api/health' && request.method==='GET') return json({ok:true,service:'ai-client-hunter',version:'workers-api-v2'});
     if(url.pathname==='/api/leads' && request.method==='GET') return getLeads(request);
     if(url.pathname.startsWith('/api/')) return json({error:'API endpoint not found'},404);
     return env.ASSETS.fetch(request);
