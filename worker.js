@@ -74,11 +74,16 @@ function makeLead(msg,isForward){
     category:'Telegram: разработка'};
 }
 async function postTelegram(env,chatId,text){
-  if(!env.TELEGRAM_BOT_TOKEN)return;
-  try{await fetch('https://api.telegram.org/bot'+env.TELEGRAM_BOT_TOKEN+'/sendMessage',{
-    method:'POST',headers:{'content-type':'application/json'},
-    body:JSON.stringify({chat_id:chatId,text,disable_web_page_preview:true})
-  })}catch{/* User can verify webhook status in Telegram */}
+  if(!env.TELEGRAM_BOT_TOKEN)return {ok:false,error:'bot_token_missing'};
+  try{
+    const response=await fetch('https://api.telegram.org/bot'+env.TELEGRAM_BOT_TOKEN+'/sendMessage',{
+      method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({chat_id:chatId,text,disable_web_page_preview:true})
+    });
+    const result=await response.json();
+    if(!response.ok||!result.ok)return {ok:false,error:'telegram_'+String(result.error_code||response.status)};
+    return {ok:true,error:null};
+  }catch{return {ok:false,error:'telegram_send_network_error'}}
 }
 async function webhook(request,env){
   if(!env.TELEGRAM_WEBHOOK_SECRET || request.headers.get('x-telegram-bot-api-secret-token')!==env.TELEGRAM_WEBHOOK_SECRET)
@@ -94,9 +99,12 @@ async function webhook(request,env){
     const senderId=String(msg.from?.id||'');
     const cmd=String(msg.text||'').trim();
     if(cmd.startsWith('/start')||cmd.startsWith('/whoami')){
-      await postTelegram(env,msg.chat.id,'AI Client Hunter. Твой Telegram ID: '+senderId+
+      const reply=await postTelegram(env,msg.chat.id,'AI Client Hunter. Твой Telegram ID: '+senderId+
         '\nПерешли сюда сообщение с запросом на разработку из любого доступного тебе чата. Доступ разрешён владельцу бота, указанному в TELEGRAM_OWNER_ID.');
-      return json({ok:true});
+      // Only anonymous delivery metadata is stored; never expose chat IDs or message contents.
+      await store(env).fetch('https://internal/diagnostics',{method:'POST',
+        body:JSON.stringify({at:new Date().toISOString(),replySent:reply.ok,error:reply.error})});
+      return json({ok:true,replySent:reply.ok});
     }
     if(!env.TELEGRAM_OWNER_ID||senderId!==String(env.TELEGRAM_OWNER_ID))return json({ok:true,ignored:'not owner'});
     const forward=Boolean(msg.forward_origin||msg.forward_date);
@@ -127,6 +135,14 @@ export class LeadStore {
       if(!lead?.id||!lead.title||lead.source!=='Telegram')return json({error:'Bad lead'},400);
       await storage.put('lead:'+lead.id,lead);
       return json({ok:true});
+    }
+    if(url.pathname==='/diagnostics'){
+      if(request.method==='POST'){
+        const item=await request.json();
+        await storage.put('diagnostic:lastStart',{at:item.at,replySent:Boolean(item.replySent),error:item.error||null});
+        return json({ok:true});
+      }
+      if(request.method==='GET')return json({lastStart:await storage.get('diagnostic:lastStart')||null});
     }
     if(url.pathname==='/list'){
       const items=await storage.list({prefix:'lead:',limit:1000});
@@ -175,7 +191,14 @@ async function telegramStatus(env){
     if(!me.ok)return json({ok:false,reason:'telegram_token_invalid',detail:'Telegram rejected bot token'},200);
     if(!hook.ok)return json({ok:false,reason:'telegram_webhook_info_failed',detail:String(hook.description||'unknown').slice(0,140)},200);
     const current=hook.result||{};
-    return json({ok:true,botUsername:me.result?.username||null,
+    let lastStart=null;
+    if(env.LEAD_STORE){
+      try{
+        const diag=await store(env).fetch('https://internal/diagnostics');
+        if(diag.ok)lastStart=(await diag.json()).lastStart||null;
+      }catch{/* Don't fail status when storage is unavailable */}
+    }
+    return json({ok:true,botUsername:me.result?.username||null,lastStart,
       webhookRegistered:Boolean(current.url),
       webhookMatchesExpected:current.url===expected,
       pendingUpdates:current.pending_update_count||0,
