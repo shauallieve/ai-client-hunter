@@ -36,7 +36,9 @@ function normalizedUsername(value){
 function explicitContact(text){
   // Only contacts explicitly offered in a message.
   const match=text.match(/(?:пишите|писать|пишите в|связь|контакт|telegram|телеграм|личку|лс|dm|tg|тг)\s*(?:в|:|—|-|@)?\s*(@[A-Za-z][A-Za-z0-9_]{4,31})/i);
-  return match?normalizedUsername(match[1].slice(1)):null;
+  if(match)return normalizedUsername(match[1].slice(1));
+  const link=text.match(/(?:пишите|контакт|телеграм|telegram|tg|тг)[^\n]{0,40}(?:https?:\/\/)?t\.me\/([A-Za-z][A-Za-z0-9_]{4,31})/i);
+  return link?normalizedUsername(link[1]):null;
 }
 function messageLink(chat,id){
   const username=normalizedUsername(chat?.username);
