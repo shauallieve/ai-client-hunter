@@ -1,0 +1,17 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {execFileSync} from 'node:child_process';
+import {mkdtempSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+const temp=mkdtempSync(join(tmpdir(),'clienthunter-'));
+execFileSync('tsc',['src/logic.ts','src/types.ts','--target','ES2022','--module','commonjs','--outDir',temp,'--skipLibCheck','true']);
+const {createRequire}=await import('node:module');const req=createRequire(import.meta.url);
+const {classify,dedupe,safeUrl,draftReply}=req(join(temp,'logic.js'));
+const prefs={services:['Сайты и лендинги','Telegram-боты'],keywords:'',exclude:'seo',minScore:40,profile:'Делаю сайты и ботов.'};
+const lead={id:'1',source:'Test',title:'Нужен Telegram-бот для записи',description:'Ищем разработчика',url:'https://example.org/1',published:new Date().toISOString(),budget:'50 000 рублей'};
+test('relevant task',()=>assert.ok(classify(lead,prefs).score>=60));
+test('irrelevant work',()=>assert.ok(classify({...lead,title:'Монтаж видео',description:'Ищем дизайнера',budget:undefined},prefs).score<40));
+test('duplicate URLs',()=>assert.equal(dedupe([lead,{...lead,id:'2'}]).length,1));
+test('safe URLs',()=>{assert.equal(safeUrl('javascript:alert(1)'),'');assert.equal(safeUrl('https://example.org/'),'https://example.org/')});
+test('draft references the task',()=>assert.ok(draftReply(lead,prefs.profile).includes('Telegram-бот')));
