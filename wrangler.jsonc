@@ -23,5 +23,13 @@
         "LeadStore"
       ]
     }
-  ]
+  ],
+  "vars": {
+    "PUBLIC_BASE_URL": "https://ai-client-hunter.kazatu2004-9ed.workers.dev"
+  },
+  "triggers": {
+    "crons": [
+      "*/10 * * * *"
+    ]
+  }
 }
