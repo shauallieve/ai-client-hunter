@@ -168,6 +168,7 @@ def submit(config: dict, leads: list[dict]) -> None:
             "Authorization": "Bearer " + config["token"],
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": "AIClientHunter/1.1 public-jobs-import",
         },
     )
     try:
@@ -177,7 +178,32 @@ def submit(config: dict, leads: list[dict]) -> None:
             raise RuntimeError("Cloudflare did not acknowledge import")
         print(f"Submitted: {answer.get('saved', 0)}; rejected: {answer.get('rejected', 0)}.")
     except HTTPError as error:
-        raise RuntimeError(f"Cloudflare import failed: HTTP {error.code}") from None
+        content_type = error.headers.get("content-type", "unknown").split(";")[0]
+        challenge = error.headers.get("cf-mitigated") == "challenge"
+        ray = error.headers.get("cf-ray", "not provided")
+        # Never print request authorization, response HTML or secrets.
+        details = f"HTTP {error.code}, content-type={content_type}, cf-ray={ray}"
+        if error.code == 403:
+            explanation = (
+                "Cloudflare blocked the import request before the Worker API. "
+                "Check Security Events / WAF for the request path /api/telegram/import and cf-ray. "
+                "If the Worker was not deployed, deploy the latest main branch."
+            )
+            if challenge:
+                explanation += " Cloudflare indicated a bot challenge."
+        elif error.code == 401:
+            explanation = (
+                "The Telegram import key does not match. Set identical "
+                "TELEGRAM_IMPORT_TOKEN values in Cloudflare Worker runtime Secrets "
+                "and GitHub Actions repository Secrets."
+            )
+        elif error.code == 503:
+            explanation = (
+                "Telegram import is not configured or its storage is unavailable in Cloudflare."
+            )
+        else:
+            explanation = "Inspect the deployed Worker API and Cloudflare logs."
+        raise RuntimeError(f"Cloudflare import failed: {details}. {explanation}") from None
     except URLError as error:
         raise RuntimeError("Cloudflare import endpoint unreachable") from error
 
