@@ -4,10 +4,18 @@ import worker from '../worker.js';
 
 function fixture() {
   const data=[];
+  let searchEntry={config:{
+    queries:['нужен разработчик','нужен сайт'],
+    includeAny:['сайт','бота','разработчик','telegram'],
+    intentAny:['нужен','ищем','нужно','сделать'],
+    excludeAny:['ищу работу'],
+    maxAgeHours:48,minChars:35,perQuery:18,maxLeads:25
+  },updatedAt:null};
   const env={
     DASHBOARD_TOKEN:'sample-a-secure-dashboard-token-for-testing-only',
     TELEGRAM_WEBHOOK_SECRET:'sample-telegram-secret',
     TELEGRAM_IMPORT_TOKEN:'example-strong-import-token-abcde12345-very-long',
+    SEARCH_ADMIN_TOKEN:'secure-search-edit-token-that-is-long-enough',
     LEAD_STORE:{
       idFromName(){return 'default'},
       get(){return {
@@ -18,6 +26,10 @@ function fixture() {
             const idx=data.findIndex(l=>l.id===lead.id);
             if(idx>=0)data[idx]=lead;else data.push(lead);
             return Response.json({ok:true});
+          }
+          if(pathname==='/search-config'){
+            if(options?.method==='POST'){searchEntry={config:JSON.parse(options.body),updatedAt:new Date().toISOString()};return Response.json(searchEntry)}
+            return Response.json(searchEntry)
           }
           if(pathname==='/list')return Response.json({leads:data,count:data.length});
           if(pathname==='/delete'){const id=JSON.parse(options.body).id;const idx=data.findIndex(x=>x.id===id);if(idx>=0)data.splice(idx,1);return Response.json({ok:true})}
@@ -122,4 +134,58 @@ test('public global-search only saves recent public job posts',async()=>{
   assert.equal(data[0].contactUrl,'https://t.me/public_customer');
   const feed=await worker.fetch(new Request(url+'/api/leads'),env);
   assert.equal((await feed.json()).leads.length,1);
+});
+
+
+test('search queries and filter settings can be read publicly',async()=>{
+  const {env}=fixture();
+  const response=await worker.fetch(new Request(url+'/api/telegram/search-config'),env);
+  assert.equal(response.status,200);
+  const result=await response.json();
+  assert.equal(result.config.maxAgeHours,48);
+  assert.equal(result.config.queries.length,2);
+  assert.equal(result.adminConfigured,true);
+});
+test('public users cannot change search filters',async()=>{
+  const {env}=fixture();
+  const cfg=(await (await worker.fetch(new Request(url+'/api/telegram/search-config'),env)).json()).config;
+  const result=await worker.fetch(new Request(url+'/api/telegram/search-config',{
+    method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(cfg)
+  }),env);
+  assert.equal(result.status,401);
+});
+test('saved search filters control which new public jobs can be imported',async()=>{
+  const {env,data}=fixture();
+  const cfg={queries:['ищем поставщика'],includeAny:['оборудование'],intentAny:['ищем'],
+    excludeAny:['продаю'],maxAgeHours:72,minChars:20,perQuery:10,maxLeads:10};
+  const saved=await worker.fetch(new Request(url+'/api/telegram/search-config',{
+    method:'PUT',headers:{'content-type':'application/json',
+    Authorization:'Bearer '+env.SEARCH_ADMIN_TOKEN},body:JSON.stringify(cfg)
+  }),env);
+  assert.equal(saved.status,200);
+  assert.equal((await saved.json()).config.queries[0],'ищем поставщика');
+  const leads=[
+    {url:'https://t.me/market_orders/201',description:'Ищем поставщика, нужно оборудование для кафе и ресторанов.',published:new Date().toISOString()},
+    {url:'https://t.me/market_orders/202',description:'Нужен разработчик сайта, сделать бота для записи.',published:new Date().toISOString()},
+    {url:'https://t.me/market_orders/203',description:'Продаю оборудование и товары для кафе. Ищем заказчиков.',published:new Date().toISOString()}
+  ];
+  const imported=await worker.fetch(new Request(url+'/api/telegram/import',{
+    method:'POST',headers:{'content-type':'application/json',
+      Authorization:'Bearer '+env.TELEGRAM_IMPORT_TOKEN},body:JSON.stringify({leads})
+  }),env);
+  assert.equal(imported.status,200);
+  const summary=await imported.json();
+  assert.equal(summary.saved,1);
+  assert.equal(summary.rejected,2);
+  assert.equal(data[0].url,'https://t.me/market_orders/201');
+});
+test('invalid or excessive search configurations are rejected',async()=>{
+  const {env}=fixture();
+  const bad={queries:Array(30).fill('поиск'),includeAny:[],intentAny:[],
+    excludeAny:[],maxAgeHours:48,minChars:20,perQuery:15,maxLeads:20};
+  const res=await worker.fetch(new Request(url+'/api/telegram/search-config',{
+    method:'PUT',headers:{'content-type':'application/json',
+      Authorization:'Bearer '+env.SEARCH_ADMIN_TOKEN},body:JSON.stringify(bad)
+  }),env);
+  assert.equal(res.status,400);
 });
