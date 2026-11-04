@@ -3,3 +3,7 @@ dist
 .wrangler
 .env
 .DS_Store
+.telegram_session.txt
+*.session
+*.session-journal
+.env.local
