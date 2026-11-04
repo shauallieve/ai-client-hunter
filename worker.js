@@ -48,11 +48,11 @@ function makeLead(msg,isForward){
   const relevance=scoreText(text);
   if(relevance.score<50)return null;
   const origin=msg.forward_origin;
-  const from=origin?.type==='user'?origin.sender_user:msg.from;
+  const from=isForward?(origin?.type==='user'?origin.sender_user:null):msg.from;
   const author=normalizedUsername(from?.username);
   const offered=explicitContact(text);
   const contactUsername=offered||author||null;
-  let url=messageLink(msg.chat,msg.message_id);
+  let url=isForward?'':messageLink(msg.chat,msg.message_id);
   let originName=msg.chat.title||'Telegram';
   if(isForward && origin?.type==='channel'){
     const original=messageLink(origin.chat,origin.message_id);
