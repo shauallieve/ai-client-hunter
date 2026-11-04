@@ -28,6 +28,8 @@ QUERIES = (
     "сделать сайт",
     "нужен телеграм бот",
     "разработать бота",
+    "нужен сайт",
+    "нужен бот",
 )
 SERVICES = (
     "сайт", "лендинг", "бота", "ботов", "бот для", "чат-бот", "telegram", "телеграм", "crm",
@@ -42,7 +44,7 @@ INTENT = (
 EXCLUDE = ("ищу работу", "ищу заказ", "предлагаю услуги", "делаю сайты на заказ")
 LIMIT_PER_QUERY = 18
 LIMIT_PER_RUN = 25
-MAX_AGE_HOURS = 36
+MAX_AGE_HOURS = 48
 
 
 def suitable(text: str) -> bool:
@@ -109,20 +111,28 @@ async def collect(config: dict) -> list[dict]:
             raise RuntimeError("Telegram session is no longer authorized")
         for query in QUERIES:
             matched = 0
+            examined = 0
+            recent = 0
+            task_like = 0
+            public_source = 0
             try:
                 async for message in client.iter_messages(None, search=query,
                                                          limit=LIMIT_PER_QUERY):
+                    examined += 1
                     if not message or not message.date or message.date < cutoff:
                         continue
+                    recent += 1
                     text = (message.raw_text or "").strip()[:1500]
                     if not suitable(text) or message.fwd_from:
                         continue
+                    task_like += 1
                     chat = await message.get_chat()
                     if not isinstance(chat, types.Channel):
                         continue
                     username = getattr(chat, "username", None)
                     if not username or not PUBLIC_NAME.fullmatch(username):
                         continue
+                    public_source += 1
                     url = f"https://t.me/{username}/{message.id}"
                     if url in unique:
                         continue
@@ -149,7 +159,10 @@ async def collect(config: dict) -> list[dict]:
                 break
             except RPCError as error:
                 print(f"Search skipped due to Telegram API error {type(error).__name__}.")
-            print(f"Query processed: {query!r}; relevant public posts: {matched}")
+            print(
+                f"Query {query!r}: results={examined}, recent={recent}, "
+                f"job-like={task_like}, public-source={public_source}, selected={matched}"
+            )
             if len(unique) >= LIMIT_PER_RUN:
                 break
             await asyncio.sleep(2)
