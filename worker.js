@@ -63,6 +63,8 @@ function makeLead(msg,isForward){
   }
   // For private forwards with hidden origin, no fabricated source link or contact.
   if(isForward && !origin)url='';
+  // Public mode must never expose messages from private groups or hidden forwarded sources.
+  if(!/^https:\/\/t\.me\/[A-Za-z][A-Za-z0-9_]{4,31}\/\d+$/.test(url))return null;
   const published=new Date(Math.max(0,Number(msg.date)||Math.floor(Date.now()/1000))*1000).toISOString();
   const id=(isForward?'forward:':'message:')+String(msg.chat.id)+':'+String(msg.message_id);
   const title=text.split(/\n/)[0].slice(0,120)||'Запрос на разработку';
@@ -131,6 +133,7 @@ export class LeadStore {
       const cutoff=Date.now()-30*86400000,leads=[];
       for(const [key,l] of items){
         if(Date.parse(l.published||'')<cutoff){await storage.delete(key);continue}
+        if(typeof l.url!=='string'||!/^https:\/\/t\.me\/[A-Za-z][A-Za-z0-9_]{4,31}\/\d+$/.test(l.url))continue;
         leads.push(l);
       }
       leads.sort((a,b)=>b.published.localeCompare(a.published));
@@ -145,10 +148,27 @@ export class LeadStore {
     return json({error:'Not found'},404);
   }
 }
+async function registerTelegramWebhook(env){
+  if(!env.TELEGRAM_BOT_TOKEN||!env.TELEGRAM_WEBHOOK_SECRET||!env.PUBLIC_BASE_URL)return;
+  const url=String(env.PUBLIC_BASE_URL).replace(/\/$/,'')+'/api/telegram/webhook';
+  if(!url.startsWith('https://'))return;
+  const response=await fetch('https://api.telegram.org/bot'+env.TELEGRAM_BOT_TOKEN+'/setWebhook',{
+    method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({url,secret_token:env.TELEGRAM_WEBHOOK_SECRET,
+      allowed_updates:['message','channel_post','edited_message','edited_channel_post'],
+      drop_pending_updates:false})
+  });
+  if(!response.ok)throw new Error('Telegram setWebhook HTTP '+response.status);
+  const result=await response.json();
+  if(!result.ok)throw new Error('Telegram setWebhook: '+String(result.description||'unknown error'));
+}
 export default {
+  async scheduled(_controller,env,ctx){
+    ctx.waitUntil(registerTelegramWebhook(env));
+  },
   async fetch(request,env){
     const url=new URL(request.url),path=url.pathname;
-    if(path==='/api/health')return json({ok:true,service:'ai-client-hunter',mode:'telegram-only',version:'telegram-v1',
+    if(path==='/api/health')return json({ok:true,service:'ai-client-hunter',mode:'telegram-only',version:'telegram-public-v2',publicAccess:true,
       configured:{bot:Boolean(env.TELEGRAM_BOT_TOKEN&&env.TELEGRAM_WEBHOOK_SECRET),
         dashboard:Boolean(env.DASHBOARD_TOKEN),store:Boolean(env.LEAD_STORE)}});
     if(path==='/api/setup/webhook'&&request.method==='POST'){
@@ -169,7 +189,7 @@ export default {
     }
     if(path==='/api/telegram/webhook'&&request.method==='POST')return webhook(request,env);
     if(path==='/api/leads'&&request.method==='GET'){
-      if(!permitted(request,env))return json({error:env.DASHBOARD_TOKEN?'unauthorized':'dashboard_token_not_configured'},env.DASHBOARD_TOKEN?401:503);
+      if(!env.LEAD_STORE)return json({error:'Telegram storage is not configured'},503);
       const data=await store(env).fetch('https://internal/list');
       const result=await data.json();
       return json({updatedAt:new Date().toISOString(),sources:[{source:'Telegram',status:'ok',count:result.count}],
