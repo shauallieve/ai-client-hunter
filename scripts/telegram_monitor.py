@@ -6,6 +6,8 @@ Only public, recent, relevant job postings are submitted to the web app.
 Respect Telegram API terms and community rules.
 """
 import asyncio
+import base64
+import binascii
 import json
 import os
 import re
@@ -53,6 +55,33 @@ def suitable(text: str) -> bool:
     )
 
 
+def validate_telegram_session(value: str) -> str:
+    """Validate Telethon v1 StringSession shape without printing its contents."""
+    session = value.strip()
+    if not session or not session.startswith("1"):
+        raise ValueError(
+            "TELEGRAM_SESSION is missing or not a Telethon StringSession. "
+            "Copy ONLY the entire contents of .telegram_session.txt into GitHub Actions secret TELEGRAM_SESSION."
+        )
+    encoded = session[1:]
+    try:
+        decoded = base64.b64decode(
+            encoded.encode("ascii"), altchars=b"-_", validate=True
+        )
+    except (ValueError, UnicodeEncodeError, binascii.Error) as error:
+        raise ValueError(
+            "TELEGRAM_SESSION has invalid characters or was truncated. "
+            "Copy the entire .telegram_session.txt content again into GitHub Actions Secrets."
+        ) from error
+    if len(decoded) not in (263, 275):
+        raise ValueError(
+            "TELEGRAM_SESSION has an incorrect encoded length. "
+            "This is usually caused by copying an incomplete or wrong value. "
+            "Copy the entire .telegram_session.txt into the GitHub secret without quotes or extra text."
+        )
+    return session
+
+
 def validate_config() -> dict:
     keys = (
         "TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_SESSION",
@@ -66,7 +95,7 @@ def validate_config() -> dict:
         raise ValueError("AI_CLIENT_HUNTER_URL must be HTTPS")
     return {"api_id": int(os.environ["TELEGRAM_API_ID"]),
             "api_hash": os.environ["TELEGRAM_API_HASH"],
-            "session": os.environ["TELEGRAM_SESSION"],
+            "session": validate_telegram_session(os.environ["TELEGRAM_SESSION"]),
             "token": os.environ["TELEGRAM_IMPORT_TOKEN"], "endpoint": endpoint}
 
 
