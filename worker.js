@@ -136,6 +136,14 @@ export class LeadStore {
       await storage.put('lead:'+lead.id,lead);
       return json({ok:true});
     }
+    if(url.pathname==='/search-report'){
+      if(request.method==='POST'){
+        const result=await request.json();
+        await storage.put('diagnostic:lastSearch',{at:result.at,saved:result.saved,rejected:result.rejected});
+        return json({ok:true});
+      }
+      if(request.method==='GET')return json({lastSearch:await storage.get('diagnostic:lastSearch')||null});
+    }
     if(url.pathname==='/diagnostics'){
       if(request.method==='POST'){
         const item=await request.json();
@@ -221,7 +229,13 @@ export default {
     const url=new URL(request.url),path=url.pathname;
     if(path==='/api/health')return json({ok:true,service:'ai-client-hunter',mode:'telegram-only',version:'telegram-public-v2',publicAccess:true,
       configured:{bot:Boolean(env.TELEGRAM_BOT_TOKEN&&env.TELEGRAM_WEBHOOK_SECRET),
-        dashboard:Boolean(env.DASHBOARD_TOKEN),store:Boolean(env.LEAD_STORE)}});
+        dashboard:Boolean(env.DASHBOARD_TOKEN),store:Boolean(env.LEAD_STORE),searchImport:Boolean(env.TELEGRAM_IMPORT_TOKEN)}});
+    if(path==='/api/telegram/search-status'&&request.method==='GET'){
+      if(!env.LEAD_STORE)return json({configured:Boolean(env.TELEGRAM_IMPORT_TOKEN),lastSearch:null});
+      const result=await store(env).fetch('https://internal/search-report');
+      const data=await result.json();
+      return json({configured:Boolean(env.TELEGRAM_IMPORT_TOKEN),lastSearch:data.lastSearch||null});
+    }
     if(path==='/api/telegram/status'&&request.method==='GET')return telegramStatus(env);
     if(path==='/api/setup/webhook'&&request.method==='POST'){
       if(!permitted(request,env))return json({error:'Unauthorized'},401);
@@ -277,6 +291,8 @@ export default {
           body:JSON.stringify(post)});
         if(result.ok)saved++;else rejected++;
       }
+      try{await store(env).fetch('https://internal/search-report',{method:'POST',
+        body:JSON.stringify({at:new Date().toISOString(),saved,rejected})})}catch{}
       return json({ok:true,saved,rejected});
     }
     if(path==='/api/leads'&&request.method==='GET'){
