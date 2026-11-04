@@ -1,0 +1,33 @@
+name: Search Telegram public job posts
+on:
+  schedule:
+    - cron: '17,47 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telegram-public-search
+  cancel-in-progress: false
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.repository == 'shauallieve/ai-client-hunter'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Telegram client library
+        run: python -m pip install -r requirements-monitor.txt
+      - name: Find relevant public job announcements and add to website
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
+          TELEGRAM_IMPORT_TOKEN: ${{ secrets.TELEGRAM_IMPORT_TOKEN }}
+          AI_CLIENT_HUNTER_URL: https://ai-client-hunter.kazatu2004-9ed.workers.dev
+        run: python scripts/telegram_monitor.py
