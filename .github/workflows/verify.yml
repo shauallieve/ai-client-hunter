@@ -1,0 +1,22 @@
+name: Check AI Client Hunter
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Test Telegram ingestion and access control
+        run: npm test
+      - name: Build React app
+        run: npm run build
+      - name: Verify Cloudflare Worker syntax
+        run: node --check worker.js
