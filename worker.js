@@ -240,6 +240,45 @@ export default {
         botUsername:bot.ok?bot.result?.username:null});
     }
     if(path==='/api/telegram/webhook'&&request.method==='POST')return webhook(request,env);
+    if(path==='/api/telegram/import'&&request.method==='POST'){
+      const secret=env.TELEGRAM_IMPORT_TOKEN;
+      if(typeof secret!=='string'||secret.length<32)return json({error:'Telegram import not configured'},503);
+      if(request.headers.get('authorization')!=='Bearer '+secret)return json({error:'Unauthorized'},401);
+      const len=Number(request.headers.get('content-length')||0);
+      if(len>70000)return json({error:'Payload too large'},413);
+      if(!env.LEAD_STORE)return json({error:'Storage unavailable'},503);
+      let payload;
+      try{payload=await request.json()}catch{return json({error:'Invalid JSON'},400)}
+      if(!Array.isArray(payload?.leads)||payload.leads.length>25)return json({error:'Expected <=25 job posts'},400);
+      const validUrl=/^https:\/\/t\.me\/([A-Za-z][A-Za-z0-9_]{4,31})\/([1-9]\d{0,12})$/;
+      const validUsername=/^[A-Za-z][A-Za-z0-9_]{4,31}$/;
+      const cutoff=Date.now()-48*3600000;
+      let saved=0,rejected=0;
+      for(const item of payload.leads){
+        if(!item||typeof item!=='object'){rejected++;continue}
+        const url=typeof item.url==='string'?item.url:'';
+        const match=url.match(validUrl);
+        const date=Date.parse(String(item.published||''));
+        const body=String(item.description||'').trim().slice(0,1500);
+        if(!match||!Number.isFinite(date)||date<cutoff||date>Date.now()+300000||body.length<20){rejected++;continue}
+        const relevance=scoreText(body);
+        if(relevance.score<60){rejected++;continue}
+        // Only directly public Telegram message URLs; never persist private messages or numeric user IDs.
+        const contactUsername=typeof item.contactUsername==='string'&&validUsername.test(item.contactUsername)?item.contactUsername:null;
+        const post={
+          id:'search:'+match[1].toLowerCase()+':'+match[2],
+          source:'Telegram',sourceChat:typeof item.sourceChat==='string'?item.sourceChat.slice(0,90):match[1],
+          title:body.split('\n')[0].slice(0,120),
+          description:body,url,published:new Date(date).toISOString(),
+          contactUsername,contactUrl:contactUsername?'https://t.me/'+contactUsername:'',
+          score:relevance.score,reasons:[relevance.reason],category:'Telegram: публичные объявления'
+        };
+        const result=await store(env).fetch('https://internal/ingest',{method:'POST',
+          body:JSON.stringify(post)});
+        if(result.ok)saved++;else rejected++;
+      }
+      return json({ok:true,saved,rejected});
+    }
     if(path==='/api/leads'&&request.method==='GET'){
       if(!env.LEAD_STORE)return json({error:'Telegram storage is not configured'},503);
       const data=await store(env).fetch('https://internal/list');
