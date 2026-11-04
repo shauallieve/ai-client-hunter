@@ -145,3 +145,21 @@ https://ai-client-hunter.kazatu2004-9ed.workers.dev/
 В GitHub → Settings → Secrets and variables → Actions обнови значение секрета `TELEGRAM_SESSION` (имя без изменений), затем снова запусти Workflow `Search Telegram public job posts`. Не публикуй строку сессии. Если сессия утекла, отзови её в Telegram → Settings → Devices.
 
 В скрипте теперь есть проверка целостности session string, поэтому следующая ошибка будет понятнее.
+
+
+### Исправление Cloudflare HTTP 403 при GitHub Actions
+
+Если поиск успешно выполняется, но лог содержит **Cloudflare import failed: HTTP 403**, причина может быть в Cloudflare Browser Integrity Check на домене **workers.dev**. По документации Cloudflare стандартный User-Agent библиотеки Python urllib может блокироваться до запуска Worker, и такой блок не всегда виден в логах приложения:
+https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/
+
+В скрипте начиная с версии **1.1** используется описательный заголовок User-Agent. Для применения исправления повторно запусти workflow из актуальной ветки **main**.
+
+Если ошибка сохранится, новая диагностика выведет **Content-Type** и **CF-Ray** (не токены). Если тело ошибки — HTML, а не JSON Worker, проверь Cloudflare Security Events. На workers.dev некоторые блокировки Browser Integrity Check нельзя отключить настройками зоны. В таком случае переведи Worker на собственный домен в Cloudflare и настрой исключение безопасности только для конкретного API-маршрута, сохраняя проверку TELEGRAM_IMPORT_TOKEN в самом Worker; **не отключай безопасность всего сайта**.
+
+Коды Worker API:
+- 200 — импорт обработан (даже если 0 объявлений).
+- 401 — неверный TELEGRAM_IMPORT_TOKEN.
+- 503 — ключ импорта или хранилище ещё не настроены.
+- 403 — не формируется текущим приложением, ищи внешний блок.
+
+Если в логе показано **selected=0**, это означает, что фильтры не нашли подходящие доступные публичные объявления. Лог теперь выводит только агрегированные счётчики без персональных данных: **results**, **recent**, **job-like**, **public-source**, **selected**. Глобальный поиск Telethon не гарантирует охват всех чужих Telegram-групп.
