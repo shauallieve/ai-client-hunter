@@ -3,6 +3,19 @@ import {Radar,RefreshCw,Search,Bookmark,ExternalLink,Copy,Settings2,Inbox,Clock,
 import type {Lead,Status} from './types';
 
 type TelegramLead=Lead&{sourceChat?:string;contactUsername?:string|null;contactUrl?:string;score:number;reasons?:string[]};
+type SearchConfig={queries:string[];includeAny:string[];intentAny:string[];excludeAny:string[];maxAgeHours:number;minChars:number;perQuery:number;maxLeads:number};
+type SearchDraft={queries:string;includeAny:string;intentAny:string;excludeAny:string;maxAgeHours:number;minChars:number;perQuery:number;maxLeads:number};
+const fromSearchConfig=(c:SearchConfig):SearchDraft=>({
+ queries:c.queries.join('\n'),includeAny:c.includeAny.join('\n'),intentAny:c.intentAny.join('\n'),
+ excludeAny:c.excludeAny.join('\n'),maxAgeHours:c.maxAgeHours,minChars:c.minChars,perQuery:c.perQuery,maxLeads:c.maxLeads
+});
+const toSearchConfig=(c:SearchDraft):SearchConfig=>({
+ queries:c.queries.split('\n').map(x=>x.trim()).filter(Boolean),
+ includeAny:c.includeAny.split('\n').map(x=>x.trim()).filter(Boolean),
+ intentAny:c.intentAny.split('\n').map(x=>x.trim()).filter(Boolean),
+ excludeAny:c.excludeAny.split('\n').map(x=>x.trim()).filter(Boolean),
+ maxAgeHours:c.maxAgeHours,minChars:c.minChars,perQuery:c.perQuery,maxLeads:c.maxLeads
+});
 const STATUS_KEY='ach-telegram-status-1',PROFILE_KEY='ach-telegram-profile-1';
 function saved<T>(key:string,fallback:T):T{try{const value=localStorage.getItem(key);return value?JSON.parse(value) as T:fallback}catch{return fallback}}
 const fmtDate=(value:string)=>{const date=new Date(value);return Number.isNaN(date.valueOf())?'Без даты':new Intl.DateTimeFormat('ru-RU',{dateStyle:'medium',timeStyle:'short'}).format(date)};
@@ -27,11 +40,21 @@ export default function App(){
  const [telegramDiag,setTelegramDiag]=useState<{ok:boolean;botUsername?:string|null;webhookRegistered?:boolean;webhookMatchesExpected?:boolean;pendingUpdates?:number;lastDeliveryError?:string|null;lastStart?:{at:string;replySent:boolean;error?:string|null}|null;reason?:string;detail?:string;nextStep?:string}|null>(null);
  const [telegramChecking,setTelegramChecking]=useState(false);
  const [searchInfo,setSearchInfo]=useState<{configured:boolean;lastSearch?:{at:string;saved:number;rejected:number}|null}|null>(null);
+ const [searchDraft,setSearchDraft]=useState<SearchDraft|null>(null);
+ const [searchAdminReady,setSearchAdminReady]=useState(false);
+ const [searchAdminKey,setSearchAdminKey]=useState('');
+ const [searchUpdatedAt,setSearchUpdatedAt]=useState<string|null>(null);
+ const [searchMessage,setSearchMessage]=useState('');
+ const [searchSaving,setSearchSaving]=useState(false);
  const [selected,setSelected]=useState<TelegramLead|null>(null),[draft,setDraft]=useState('');
  useEffect(()=>{localStorage.setItem(STATUS_KEY,JSON.stringify(statuses))},[statuses]);
  useEffect(()=>{localStorage.setItem(PROFILE_KEY,JSON.stringify(profile))},[profile]);
  useEffect(()=>{void fetch('/api/health').then(r=>r.json()).then(setHealth).catch(()=>setHealth(null))},[]);
  useEffect(()=>{void fetch('/api/telegram/search-status').then(r=>r.json()).then(setSearchInfo).catch(()=>setSearchInfo(null))},[]);
+ useEffect(()=>{void fetch('/api/telegram/search-config',{cache:'no-store'})
+   .then(async r=>{const data=await r.json();if(!r.ok)throw Error(data.error||'Не удалось загрузить настройки поиска');return data})
+   .then(data=>{setSearchDraft(fromSearchConfig(data.config as SearchConfig));setSearchAdminReady(Boolean(data.adminConfigured));setSearchUpdatedAt(data.updatedAt||null)})
+   .catch(e=>setSearchMessage(e instanceof Error?e.message:'Ошибка загрузки критериев'))},[]);
  const load=useCallback(async()=>{
   setLoading(true);setError('');
   try{
@@ -55,6 +78,24 @@ export default function App(){
    setTelegramDiag(data);
   }catch(e){setTelegramDiag({ok:false,detail:e instanceof Error?e.message:String(e)})}
   finally{setTelegramChecking(false)}
+ }
+ async function saveSearchConfig(){
+  if(!searchDraft)return;
+  if(!searchAdminKey.trim()){setSearchMessage('Введи ключ SEARCH_ADMIN_TOKEN, чтобы сохранить настройки.');return}
+  setSearchSaving(true);setSearchMessage('');
+  try{
+   const response=await fetch('/api/telegram/search-config',{
+    method:'PUT',
+    headers:{'content-type':'application/json','Authorization':'Bearer '+searchAdminKey.trim()},
+    body:JSON.stringify(toSearchConfig(searchDraft))
+   });
+   const data=await response.json();
+   if(!response.ok)throw Error(data.error||'Ошибка сохранения');
+   setSearchDraft(fromSearchConfig(data.config as SearchConfig));
+   setSearchUpdatedAt(data.updatedAt||null);
+   setSearchMessage('Критерии сохранены в Cloudflare. Они применятся при следующем облачном запуске поиска.');
+  }catch(e){setSearchMessage(e instanceof Error?e.message:'Не удалось сохранить')}
+  finally{setSearchSaving(false)}
  }
  function mark(id:string,status:Status){setStatuses(s=>({...s,[id]:status}))}
  function reply(l:TelegramLead){setSelected(l);setDraft(leadReply(l,profile))}
@@ -112,11 +153,52 @@ export default function App(){
       <a className="text-accent underline text-sm" href="https://github.com/shauallieve/ai-client-hunter#telegram-setup" target="_blank" rel="noopener noreferrer">Подробная инструкция</a>
     </div>
     <div className="border border-line rounded-2xl p-4 space-y-3">
-      <h4 className="font-bold">Поиск публичных Telegram-заказов</h4>
-      <p className="text-muted text-sm">Дополнительный модуль через Telegram API пользовательского аккаунта. Отбирает отдельные свежие объявления по запросам и отправляет их на сайт через защищённый API. Работает по расписанию GitHub Actions, только после настройки твоих API-секретов.</p>
-      <p className="text-sm">Статус: <b>{searchInfo?.configured?'Приём объявлений настроен':'Требуется TELEGRAM_IMPORT_TOKEN'}</b></p>
-      <p className="text-muted text-sm">Последний успешный импорт: {searchInfo?.lastSearch?fmtDate(searchInfo.lastSearch.at)+' · '+searchInfo.lastSearch.saved+' сохранено':'Ещё не было'}</p>
-      <a className="text-accent underline text-sm" target="_blank" rel="noopener noreferrer" href="https://github.com/shauallieve/ai-client-hunter#automatic-public-job-search">Инструкция запуска поиска</a>
+      <h4 className="text-lg font-bold">Твои критерии поиска Telegram-заказов</h4>
+      <p className="text-muted text-sm">Поисковые фразы задают, что Telegram должен искать. Остальные поля фильтруют найденные объявления. Критерии сохраняются в Cloudflare и используются поисковым скриптом при следующем запуске.</p>
+      <div className="text-xs text-muted flex flex-wrap gap-2">
+        <span className="tag">Импорт: {searchInfo?.configured?'включён':'требует настройки'}</span>
+        <span className="tag">Изменение настроек: {searchAdminReady?'доступно с ключом':'нужен ключ Cloudflare'}</span>
+      </div>
+      {searchDraft?<div className="space-y-4">
+        <label className="block text-sm font-semibold">Поисковые фразы — по одной на строке (1–12)
+          <textarea className="field mt-2 min-h-40" value={searchDraft.queries} onChange={e=>setSearchDraft(p=>p?{...p,queries:e.target.value}:p)} placeholder={'нужен лендинг\nищем разработчика бота\nавтоматизировать WhatsApp'}/>
+        </label>
+        <div className="grid md:grid-cols-2 gap-3">
+          {([{key:'includeAny',label:'Слова по тематике (любое из списка)',placeholder:'сайт\nлендинг\nбота\ncrm'},{key:'intentAny',label:'Признаки заказа (любое из списка)',placeholder:'нужно\nищем\nзаказать'},{key:'excludeAny',label:'Исключения',placeholder:'ищу работу\nпредлагаю услуги'}] as const).map(field=>
+            <label className="block text-sm" key={field.key}>{field.label}
+              <textarea className="field mt-2 min-h-32" value={searchDraft[field.key]} placeholder={field.placeholder} onChange={e=>setSearchDraft(p=>p?{...p,[field.key]:e.target.value}:p)}/>
+            </label>
+          )}
+        </div>
+        <p className="text-muted text-xs">Если поле «Слова по тематике» или «Признаки заказа» оставить пустым, соответствующий дополнительный фильтр будет отключён. Исключения необязательны.</p>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <label className="block text-xs">Свежесть (часов)
+            <select className="field mt-1" value={searchDraft.maxAgeHours} onChange={e=>setSearchDraft(p=>p?{...p,maxAgeHours:Number(e.target.value)}:p)}>
+              {[12,24,48,72,96,168].map(v=><option value={v} key={v}>{v} ч</option>)}
+            </select>
+          </label>
+          <label className="block text-xs">Мин. длина текста
+            <input type="number" className="field mt-1" min={10} max={150} value={searchDraft.minChars} onChange={e=>setSearchDraft(p=>p?{...p,minChars:Number(e.target.value)}:p)}/>
+          </label>
+          <label className="block text-xs">Сообщений на запрос
+            <input type="number" className="field mt-1" min={5} max={30} value={searchDraft.perQuery} onChange={e=>setSearchDraft(p=>p?{...p,perQuery:Number(e.target.value)}:p)}/>
+          </label>
+          <label className="block text-xs">Лидов за запуск
+            <input type="number" className="field mt-1" min={1} max={25} value={searchDraft.maxLeads} onChange={e=>setSearchDraft(p=>p?{...p,maxLeads:Number(e.target.value)}:p)}/>
+          </label>
+        </div>
+        <label className="block text-sm font-semibold">Ключ изменения настроек (SEARCH_ADMIN_TOKEN)
+          <input type="password" className="field mt-2" autoComplete="off" value={searchAdminKey} onChange={e=>setSearchAdminKey(e.target.value)} placeholder="Пароль из Secret Cloudflare"/>
+        </label>
+        <div className="flex flex-wrap gap-2 items-center">
+          <button className="btn btn-primary" onClick={()=>void saveSearchConfig()} disabled={searchSaving}>{searchSaving?'Сохраняю...':'Сохранить критерии'}</button>
+          <a className="btn" target="_blank" rel="noopener noreferrer" href="https://github.com/shauallieve/ai-client-hunter/actions/workflows/telegram-search.yml">Запустить поиск сейчас в GitHub</a>
+        </div>
+      </div>:<p className="text-sm text-muted">Загрузка настроек поиска...</p>}
+      {searchMessage&&<p className="text-sm text-accent">{searchMessage}</p>}
+      <p className="text-muted text-xs">Сохранено: {searchUpdatedAt?fmtDate(searchUpdatedAt):'Используются стандартные критерии'}. Автоматический запуск — примерно каждые 30 минут; кнопка GitHub позволяет запустить раньше. Изменения не влияют на уже сохранённые лиды.</p>
+      <p className="text-muted text-xs">Последний импорт: {searchInfo?.lastSearch?fmtDate(searchInfo.lastSearch.at)+' · '+searchInfo.lastSearch.saved+' сохранено':'Ещё не было'}</p>
+      <a className="text-accent underline text-sm" target="_blank" rel="noopener noreferrer" href="https://github.com/shauallieve/ai-client-hunter#automatic-public-job-search">Инструкция подключения поиска</a>
     </div>
     <p className="text-muted text-sm">Бот видит сообщения разрешённых ему чатов. Отдельный поисковый модуль может искать ограниченное количество публичных объявлений по ключевым словам. Оба способа работают только после настройки; список обновляется раз в минуту при открытой вкладке.</p>
     <button className="btn btn-primary" onClick={()=>setPage('leads')}>Готово</button>
