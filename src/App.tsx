@@ -27,6 +27,7 @@ export default function App(){
  const [sort,setSort]=useState<'score'|'recent'>('recent');
  const [loading,setLoading]=useState(false),[error,setError]=useState(''),[updated,setUpdated]=useState('');
  const [selected,setSelected]=useState<TelegramLead|null>(null),[draft,setDraft]=useState('');
+ const [setupMessage,setSetupMessage]=useState(''),[botUsername,setBotUsername]=useState('');
  useEffect(()=>{localStorage.setItem(STATUS_KEY,JSON.stringify(statuses))},[statuses]);
  useEffect(()=>{localStorage.setItem(PROFILE_KEY,JSON.stringify(profile))},[profile]);
  useEffect(()=>{void fetch('/api/health').then(r=>r.json()).then(setHealth).catch(()=>setHealth(null))},[]);
@@ -47,6 +48,17 @@ export default function App(){
   finally{setLoading(false)}
  },[]);
  useEffect(()=>{if(!token)return;void load(token);const timer=setInterval(()=>{if(!document.hidden)void load(token)},60000);return()=>clearInterval(timer)},[token,load]);
+ async function setupWebhook(){
+  setSetupMessage('Подключаю...');
+  try{
+   const response=await fetch('/api/setup/webhook',{method:'POST',headers:{Authorization:'Bearer '+token}});
+   const data=await response.json();
+   if(!response.ok)throw new Error(data.error||'Не удалось подключить webhook');
+   setBotUsername(data.botUsername||'');
+   setSetupMessage('Webhook активирован. Теперь добавь бота в выбранные Telegram-чаты или перешли ему сообщение.');
+   void fetch('/api/health').then(r=>r.json()).then(setHealth);
+  }catch(err){setSetupMessage(err instanceof Error?err.message:String(err))}
+ }
  function unlock(){const t=tokenInput.trim();if(!t)return;setToken(t);setTokenInput('');try{sessionStorage.setItem(TOKEN_KEY,t)}catch{}}
  function lock(){setToken('');setLeads([]);setError('');try{sessionStorage.removeItem(TOKEN_KEY)}catch{}}
  function mark(id:string,status:Status){setStatuses(s=>({...s,[id]:status}))}
@@ -96,6 +108,14 @@ export default function App(){
     <h3 className="text-2xl font-bold">Настройки</h3>
     <label className="block">Минимальная релевантность: <b className="text-accent">{minScore}/100</b><input className="w-full mt-3" type="range" min="0" max="95" value={minScore} onChange={e=>setMinScore(Number(e.target.value))}/></label>
     <label className="block">Твой профиль для откликов<textarea className="field min-h-32 mt-2" value={profile} onChange={e=>setProfile(e.target.value)}/></label>
+    <div className="border border-line rounded-2xl p-4 space-y-3">
+      <h4 className="font-bold">Подключение Telegram</h4>
+      <p className="text-muted text-sm">1. Создай бота через @BotFather. 2. Добавь TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET и DASHBOARD_TOKEN в Secrets Cloudflare Worker. 3. Нажми кнопку ниже.</p>
+      <button className="btn btn-primary" onClick={()=>void setupWebhook()}>Активировать Telegram webhook</button>
+      {setupMessage&&<p className="text-sm text-accent">{setupMessage}</p>}
+      {botUsername&&<a href={'https://t.me/'+botUsername} target="_blank" rel="noopener noreferrer" className="text-accent underline text-sm">Открыть бота @{botUsername}</a>}
+      <p className="text-muted text-xs">Для чтения сообщений группы бот должен быть администратором либо иметь отключённый Privacy Mode. Пересланные сообщения в личный чат бота принимаются только от TELEGRAM_OWNER_ID.</p>
+    </div>
     <p className="text-muted text-sm">Мониторинг работает только там, где Telegram разрешает боту видеть сообщения. Новые запросы сохраняются автоматически; список обновляется раз в минуту при открытой вкладке.</p>
     <button className="btn btn-primary" onClick={()=>setPage('leads')}>Готово</button>
    </section>:<>
