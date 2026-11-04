@@ -149,6 +149,22 @@ export default {
     if(path==='/api/health')return json({ok:true,service:'ai-client-hunter',mode:'telegram-only',version:'telegram-v1',
       configured:{bot:Boolean(env.TELEGRAM_BOT_TOKEN&&env.TELEGRAM_WEBHOOK_SECRET),
         dashboard:Boolean(env.DASHBOARD_TOKEN),store:Boolean(env.LEAD_STORE)}});
+    if(path==='/api/setup/webhook'&&request.method==='POST'){
+      if(!permitted(request,env))return json({error:'Unauthorized'},401);
+      if(!env.TELEGRAM_BOT_TOKEN||!env.TELEGRAM_WEBHOOK_SECRET)return json({error:'Сначала добавь TELEGRAM_BOT_TOKEN и TELEGRAM_WEBHOOK_SECRET в секреты Worker'},503);
+      const endpoint='https://api.telegram.org/bot'+env.TELEGRAM_BOT_TOKEN+'/setWebhook';
+      const response=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},
+        body:JSON.stringify({url:new URL('/api/telegram/webhook',request.url).toString(),
+          secret_token:env.TELEGRAM_WEBHOOK_SECRET,
+          allowed_updates:['message','channel_post','edited_message','edited_channel_post'],
+          drop_pending_updates:false})});
+      const answer=await response.json();
+      if(!answer.ok)return json({error:'Telegram: '+(answer.description||'ошибка setWebhook')},502);
+      const botResponse=await fetch('https://api.telegram.org/bot'+env.TELEGRAM_BOT_TOKEN+'/getMe');
+      const bot=await botResponse.json();
+      return json({ok:true,webhook:new URL('/api/telegram/webhook',request.url).toString(),
+        botUsername:bot.ok?bot.result?.username:null});
+    }
     if(path==='/api/telegram/webhook'&&request.method==='POST')return webhook(request,env);
     if(path==='/api/leads'&&request.method==='GET'){
       if(!permitted(request,env))return json({error:env.DASHBOARD_TOKEN?'unauthorized':'dashboard_token_not_configured'},env.DASHBOARD_TOKEN?401:503);
