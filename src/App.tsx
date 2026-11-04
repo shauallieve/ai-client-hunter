@@ -15,7 +15,7 @@ function leadReply(l:TelegramLead,profile:string){
 export default function App(){
  const [leads,setLeads]=useState<TelegramLead[]>([]);
  const [sources,setSources]=useState<{source:string;status:string;count:number}[]>([]);
- const [health,setHealth]=useState<{ok:boolean;mode?:string;configured?:{bot:boolean;dashboard:boolean;store:boolean}}|null>(null);
+ const [health,setHealth]=useState<{ok:boolean;mode?:string;configured?:{bot:boolean;dashboard:boolean;store:boolean;searchImport?:boolean}}|null>(null);
  const [statuses,setStatuses]=useState<Record<string,Status>>(()=>saved(STATUS_KEY,{}));
  const [profile,setProfile]=useState(()=>saved(PROFILE_KEY,defaultProfile));
  const [minScore,setMinScore]=useState(55);
@@ -26,10 +26,12 @@ export default function App(){
  const [loading,setLoading]=useState(false),[error,setError]=useState(''),[updated,setUpdated]=useState('');
  const [telegramDiag,setTelegramDiag]=useState<{ok:boolean;botUsername?:string|null;webhookRegistered?:boolean;webhookMatchesExpected?:boolean;pendingUpdates?:number;lastDeliveryError?:string|null;lastStart?:{at:string;replySent:boolean;error?:string|null}|null;reason?:string;detail?:string;nextStep?:string}|null>(null);
  const [telegramChecking,setTelegramChecking]=useState(false);
+ const [searchInfo,setSearchInfo]=useState<{configured:boolean;lastSearch?:{at:string;saved:number;rejected:number}|null}|null>(null);
  const [selected,setSelected]=useState<TelegramLead|null>(null),[draft,setDraft]=useState('');
  useEffect(()=>{localStorage.setItem(STATUS_KEY,JSON.stringify(statuses))},[statuses]);
  useEffect(()=>{localStorage.setItem(PROFILE_KEY,JSON.stringify(profile))},[profile]);
  useEffect(()=>{void fetch('/api/health').then(r=>r.json()).then(setHealth).catch(()=>setHealth(null))},[]);
+ useEffect(()=>{void fetch('/api/telegram/search-status').then(r=>r.json()).then(setSearchInfo).catch(()=>setSearchInfo(null))},[]);
  const load=useCallback(async()=>{
   setLoading(true);setError('');
   try{
@@ -75,7 +77,7 @@ export default function App(){
    <section className="rounded-3xl border border-[#34423b] bg-gradient-to-br from-[#1c2925] via-[#111a23] to-[#101623] p-6 md:p-10 mb-6">
     <div className="text-accent text-xs tracking-widest font-bold uppercase mb-3">Telegram · только реальные сообщения</div>
     <h2 className="text-2xl md:text-4xl font-extrabold">Клиенты уже ищут разработчиков.<br/><span className="text-accent">Лови подходящие заявки.</span></h2>
-    <p className="text-muted text-sm mt-3 max-w-2xl">Бот отслеживает новые заказы в подключённых публичных группах и каналах. Показываем публичный @username и ссылку на исходное сообщение. Без авторизации и массовых рассылок.</p>
+    <p className="text-muted text-sm mt-3 max-w-2xl">Получай заявки из подключённых Telegram-чатов и, после отдельной настройки, из поиска публичных объявлений. Показываем публичные контакты и ссылки на исходные сообщения. Без массовых рассылок.</p>
     <div className="flex gap-2 mt-6 flex-wrap"><button className="btn btn-primary flex gap-2 items-center" onClick={()=>void load()} disabled={loading}><RefreshCw size={16}/>{loading?'Проверяю...':'Обновить лиды'}</button></div>
    </section>
    {health&&<div className="flex gap-2 flex-wrap mb-5 text-xs">
@@ -83,6 +85,7 @@ export default function App(){
     <span className="tag">Telegram webhook: {health.configured?.bot?'секреты настроены':'нужно настроить'}</span>
     <span className="tag">Публичный просмотр: открыт</span>
     <span className="tag">Хранилище: {health.configured?.store?'подключено':'не подключено'}</span>
+    <span className="tag">Поиск по публичным объявлениям: {health.configured?.searchImport?'приём включён':'требует настройки'}</span>
    </div>}
    {page==='settings'?<section className="glass rounded-3xl p-6 md:p-8 max-w-3xl space-y-5">
     <h3 className="text-2xl font-bold">Настройки</h3>
@@ -108,7 +111,14 @@ export default function App(){
       <p className="text-xs text-amber-200">Важно: сайт открыт всем по ссылке. Поэтому отображаются только заявки из Telegram с публичной ссылкой на исходное сообщение.</p>
       <a className="text-accent underline text-sm" href="https://github.com/shauallieve/ai-client-hunter#telegram-setup" target="_blank" rel="noopener noreferrer">Подробная инструкция</a>
     </div>
-    <p className="text-muted text-sm">Мониторинг работает только там, где Telegram разрешает боту видеть сообщения. Новые запросы сохраняются автоматически; список обновляется раз в минуту при открытой вкладке.</p>
+    <div className="border border-line rounded-2xl p-4 space-y-3">
+      <h4 className="font-bold">Поиск публичных Telegram-заказов</h4>
+      <p className="text-muted text-sm">Дополнительный модуль через Telegram API пользовательского аккаунта. Отбирает отдельные свежие объявления по запросам и отправляет их на сайт через защищённый API. Работает по расписанию GitHub Actions, только после настройки твоих API-секретов.</p>
+      <p className="text-sm">Статус: <b>{searchInfo?.configured?'Приём объявлений настроен':'Требуется TELEGRAM_IMPORT_TOKEN'}</b></p>
+      <p className="text-muted text-sm">Последний успешный импорт: {searchInfo?.lastSearch?fmtDate(searchInfo.lastSearch.at)+' · '+searchInfo.lastSearch.saved+' сохранено':'Ещё не было'}</p>
+      <a className="text-accent underline text-sm" target="_blank" rel="noopener noreferrer" href="https://github.com/shauallieve/ai-client-hunter#automatic-public-job-search">Инструкция запуска поиска</a>
+    </div>
+    <p className="text-muted text-sm">Бот видит сообщения разрешённых ему чатов. Отдельный поисковый модуль может искать ограниченное количество публичных объявлений по ключевым словам. Оба способа работают только после настройки; список обновляется раз в минуту при открытой вкладке.</p>
     <button className="btn btn-primary" onClick={()=>setPage('leads')}>Готово</button>
    </section>:<>
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
