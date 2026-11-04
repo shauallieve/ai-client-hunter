@@ -24,6 +24,8 @@ export default function App(){
  const [page,setPage]=useState<'leads'|'settings'>('leads');
  const [sort,setSort]=useState<'score'|'recent'>('recent');
  const [loading,setLoading]=useState(false),[error,setError]=useState(''),[updated,setUpdated]=useState('');
+ const [telegramDiag,setTelegramDiag]=useState<{ok:boolean;botUsername?:string|null;webhookRegistered?:boolean;webhookMatchesExpected?:boolean;pendingUpdates?:number;lastDeliveryError?:string|null;reason?:string;detail?:string;nextStep?:string}|null>(null);
+ const [telegramChecking,setTelegramChecking]=useState(false);
  const [selected,setSelected]=useState<TelegramLead|null>(null),[draft,setDraft]=useState('');
  useEffect(()=>{localStorage.setItem(STATUS_KEY,JSON.stringify(statuses))},[statuses]);
  useEffect(()=>{localStorage.setItem(PROFILE_KEY,JSON.stringify(profile))},[profile]);
@@ -43,6 +45,15 @@ export default function App(){
   finally{setLoading(false)}
  },[]);
  useEffect(()=>{void load();const timer=setInterval(()=>{if(!document.hidden)void load()},60000);return()=>clearInterval(timer)},[load]);
+ async function checkTelegram(){
+  setTelegramChecking(true);
+  try{
+   const response=await fetch('/api/telegram/status',{cache:'no-store'});
+   const data=await response.json();
+   setTelegramDiag(data);
+  }catch(e){setTelegramDiag({ok:false,detail:e instanceof Error?e.message:String(e)})}
+  finally{setTelegramChecking(false)}
+ }
  function mark(id:string,status:Status){setStatuses(s=>({...s,[id]:status}))}
  function reply(l:TelegramLead){setSelected(l);setDraft(leadReply(l,profile))}
  async function copy(){try{await navigator.clipboard.writeText(draft)}catch{setError('Не удалось скопировать. Выдели текст и скопируй вручную.')}}
@@ -81,6 +92,17 @@ export default function App(){
       <h4 className="font-bold">Подключение Telegram</h4>
       <p className="text-muted text-sm">Создай бота через @BotFather и добавь в Cloudflare два секрета: TELEGRAM_BOT_TOKEN и TELEGRAM_WEBHOOK_SECRET. DASHBOARD_TOKEN для просмотра больше не нужен.</p>
       <p className="text-muted text-sm">Cloudflare автоматически устанавливает Telegram webhook по расписанию (каждые 10 минут), если оба секрета настроены. После этого добавь бота в разрешённые публичные группы или каналы.</p>
+      <button className="btn" onClick={()=>void checkTelegram()} disabled={telegramChecking}>{telegramChecking?'Проверяю Telegram...':'Проверить подключение Telegram'}</button>
+      {telegramDiag&&<div className="rounded-xl border border-line p-3 space-y-2 text-sm">
+        <p>Токен бота: <b>{telegramDiag.ok?'Действует':'Не подтверждён'}</b></p>
+        {telegramDiag.botUsername&&<p>Бот: <a className="text-accent underline" href={'https://t.me/'+telegramDiag.botUsername} target="_blank" rel="noopener noreferrer">@{telegramDiag.botUsername}</a></p>}
+        <p>Webhook: <b>{telegramDiag.webhookMatchesExpected?'Подключён':telegramDiag.webhookRegistered?'Подключён к другому адресу':'Не подключён'}</b></p>
+        {typeof telegramDiag.pendingUpdates==='number'&&<p>Сообщений в очереди: {telegramDiag.pendingUpdates}</p>}
+        {telegramDiag.lastDeliveryError&&<p className="text-orange-200">Ошибка Telegram: {telegramDiag.lastDeliveryError}</p>}
+        {telegramDiag.detail&&<p className="text-orange-200">{telegramDiag.detail}</p>}
+        {telegramDiag.nextStep&&<p className="text-muted">{telegramDiag.nextStep}</p>}
+      </div>}
+
       <p className="text-xs text-amber-200">Важно: сайт открыт всем по ссылке. Поэтому отображаются только заявки из Telegram с публичной ссылкой на исходное сообщение.</p>
       <a className="text-accent underline text-sm" href="https://github.com/shauallieve/ai-client-hunter#telegram-setup" target="_blank" rel="noopener noreferrer">Подробная инструкция</a>
     </div>
