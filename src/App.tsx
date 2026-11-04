@@ -1,9 +1,9 @@
 import {useCallback,useEffect,useMemo,useState} from 'react';
-import {Radar,RefreshCw,Search,Bookmark,ExternalLink,Copy,Settings2,Inbox,Clock,MessageCircle,ShieldCheck,Send,LockKeyhole,Trash2,X,CheckCircle2,AlertTriangle} from 'lucide-react';
+import {Radar,RefreshCw,Search,Bookmark,ExternalLink,Copy,Settings2,Inbox,Clock,MessageCircle,ShieldCheck,Send,Trash2,X,CheckCircle2,AlertTriangle} from 'lucide-react';
 import type {Lead,Status} from './types';
 
 type TelegramLead=Lead&{sourceChat?:string;contactUsername?:string|null;contactUrl?:string;score:number;reasons?:string[]};
-const STATUS_KEY='ach-telegram-status-1',PROFILE_KEY='ach-telegram-profile-1',TOKEN_KEY='ach-dashboard-session';
+const STATUS_KEY='ach-telegram-status-1',PROFILE_KEY='ach-telegram-profile-1';
 function saved<T>(key:string,fallback:T):T{try{const value=localStorage.getItem(key);return value?JSON.parse(value) as T:fallback}catch{return fallback}}
 const fmtDate=(value:string)=>{const date=new Date(value);return Number.isNaN(date.valueOf())?'Без даты':new Intl.DateTimeFormat('ru-RU',{dateStyle:'medium',timeStyle:'short'}).format(date)};
 const defaultProfile='Разрабатываю сайты, Telegram-ботов и автоматизации на React/TypeScript. Могу уточнить задачу, предложить этапы и заранее согласовать стоимость.';
@@ -13,8 +13,6 @@ function leadReply(l:TelegramLead,profile:string){
  profile.trim()+'\n\nПодскажите, пожалуйста, задача ещё актуальна? Если да, какие функции нужны в первую очередь и есть ли ориентир по бюджету?\n\nМогу предложить план реализации и стоимость.';
 }
 export default function App(){
- const [token,setToken]=useState(()=>{try{return sessionStorage.getItem(TOKEN_KEY)||''}catch{return ''}});
- const [tokenInput,setTokenInput]=useState('');
  const [leads,setLeads]=useState<TelegramLead[]>([]);
  const [sources,setSources]=useState<{source:string;status:string;count:number}[]>([]);
  const [health,setHealth]=useState<{ok:boolean;mode?:string;configured?:{bot:boolean;dashboard:boolean;store:boolean}}|null>(null);
@@ -27,19 +25,16 @@ export default function App(){
  const [sort,setSort]=useState<'score'|'recent'>('recent');
  const [loading,setLoading]=useState(false),[error,setError]=useState(''),[updated,setUpdated]=useState('');
  const [selected,setSelected]=useState<TelegramLead|null>(null),[draft,setDraft]=useState('');
- const [setupMessage,setSetupMessage]=useState(''),[botUsername,setBotUsername]=useState('');
  useEffect(()=>{localStorage.setItem(STATUS_KEY,JSON.stringify(statuses))},[statuses]);
  useEffect(()=>{localStorage.setItem(PROFILE_KEY,JSON.stringify(profile))},[profile]);
  useEffect(()=>{void fetch('/api/health').then(r=>r.json()).then(setHealth).catch(()=>setHealth(null))},[]);
- const load=useCallback(async(auth:string)=>{
-  if(!auth)return;
+ const load=useCallback(async()=>{
   setLoading(true);setError('');
   try{
-    const response=await fetch('/api/leads',{headers:{Authorization:'Bearer '+auth,Accept:'application/json'},cache:'no-store'});
+    const response=await fetch('/api/leads',{headers:{Accept:'application/json'},cache:'no-store'});
     const type=response.headers.get('content-type')||'';
     if(!type.includes('json'))throw new Error('Сервер вернул HTML вместо API. Проверь последний Workers deployment.');
     const data=await response.json();
-    if(response.status===401)throw new Error('Неверный ключ панели. Проверь DASHBOARD_TOKEN в Cloudflare.');
     if(!response.ok)throw new Error(data.error||('Ошибка API '+response.status));
     setLeads(Array.isArray(data.leads)?data.leads:[]);
     setSources(data.sources||[]);
@@ -47,28 +42,11 @@ export default function App(){
   }catch(err){setError(err instanceof Error?err.message:String(err))}
   finally{setLoading(false)}
  },[]);
- useEffect(()=>{if(!token)return;void load(token);const timer=setInterval(()=>{if(!document.hidden)void load(token)},60000);return()=>clearInterval(timer)},[token,load]);
- async function setupWebhook(){
-  setSetupMessage('Подключаю...');
-  try{
-   const response=await fetch('/api/setup/webhook',{method:'POST',headers:{Authorization:'Bearer '+token}});
-   const data=await response.json();
-   if(!response.ok)throw new Error(data.error||'Не удалось подключить webhook');
-   setBotUsername(data.botUsername||'');
-   setSetupMessage('Webhook активирован. Теперь добавь бота в выбранные Telegram-чаты или перешли ему сообщение.');
-   void fetch('/api/health').then(r=>r.json()).then(setHealth);
-  }catch(err){setSetupMessage(err instanceof Error?err.message:String(err))}
- }
- function unlock(){const t=tokenInput.trim();if(!t)return;setToken(t);setTokenInput('');try{sessionStorage.setItem(TOKEN_KEY,t)}catch{}}
- function lock(){setToken('');setLeads([]);setError('');try{sessionStorage.removeItem(TOKEN_KEY)}catch{}}
+ useEffect(()=>{void load();const timer=setInterval(()=>{if(!document.hidden)void load()},60000);return()=>clearInterval(timer)},[load]);
  function mark(id:string,status:Status){setStatuses(s=>({...s,[id]:status}))}
  function reply(l:TelegramLead){setSelected(l);setDraft(leadReply(l,profile))}
  async function copy(){try{await navigator.clipboard.writeText(draft)}catch{setError('Не удалось скопировать. Выдели текст и скопируй вручную.')}}
- async function remove(l:TelegramLead){
-  if(!window.confirm('Удалить эту заявку из базы?'))return;
-  try{const r=await fetch('/api/leads',{method:'DELETE',headers:{Authorization:'Bearer '+token,'content-type':'application/json'},body:JSON.stringify({id:l.id})});if(!r.ok)throw Error('Удаление не удалось');setLeads(items=>items.filter(x=>x.id!==l.id))}catch(e){setError(e instanceof Error?e.message:String(e))}
- }
- const shown=useMemo(()=>leads.filter(l=>(l.score||0)>=minScore)
+ const shown=useMemo(()=>leads.filter(l=>statuses[l.id]!=='ignored').filter(l=>(l.score||0)>=minScore)
   .filter(l=>tab==='all'||(tab==='saved'?['saved','contacted','won'].includes(statuses[l.id]):statuses[l.id]==='contacted'))
   .filter(l=>!query||[l.title,l.description,l.sourceChat,l.contactUsername].join(' ').toLowerCase().includes(query.toLowerCase()))
   .sort((a,b)=>sort==='score'?(b.score||0)-(a.score||0):b.published.localeCompare(a.published)),
@@ -86,35 +64,25 @@ export default function App(){
    <section className="rounded-3xl border border-[#34423b] bg-gradient-to-br from-[#1c2925] via-[#111a23] to-[#101623] p-6 md:p-10 mb-6">
     <div className="text-accent text-xs tracking-widest font-bold uppercase mb-3">Telegram · только реальные сообщения</div>
     <h2 className="text-2xl md:text-4xl font-extrabold">Клиенты уже ищут разработчиков.<br/><span className="text-accent">Лови подходящие заявки.</span></h2>
-    <p className="text-muted text-sm mt-3 max-w-2xl">Бот отслеживает новые сообщения в подключённых группах и каналах. Показываем автора через публичный @username и ссылку на сообщение, если Telegram их предоставляет. Массовой рассылки нет.</p>
-    {token&&<div className="flex gap-2 mt-6 flex-wrap"><button className="btn btn-primary flex gap-2 items-center" onClick={()=>void load(token)} disabled={loading}><RefreshCw size={16}/>{loading?'Проверяю...':'Обновить лиды'}</button><button className="btn" onClick={lock}><LockKeyhole size={15} className="inline"/> Закрыть панель</button></div>}
+    <p className="text-muted text-sm mt-3 max-w-2xl">Бот отслеживает новые заказы в подключённых публичных группах и каналах. Показываем публичный @username и ссылку на исходное сообщение. Без авторизации и массовых рассылок.</p>
+    <div className="flex gap-2 mt-6 flex-wrap"><button className="btn btn-primary flex gap-2 items-center" onClick={()=>void load()} disabled={loading}><RefreshCw size={16}/>{loading?'Проверяю...':'Обновить лиды'}</button></div>
    </section>
    {health&&<div className="flex gap-2 flex-wrap mb-5 text-xs">
     <span className="tag">API: {health.mode||'неизвестно'}</span>
     <span className="tag">Telegram webhook: {health.configured?.bot?'секреты настроены':'нужно настроить'}</span>
-    <span className="tag">Панель: {health.configured?.dashboard?'защищена':'ключ не настроен'}</span>
+    <span className="tag">Публичный просмотр: открыт</span>
     <span className="tag">Хранилище: {health.configured?.store?'подключено':'не подключено'}</span>
    </div>}
-   {!token?<section className="glass rounded-3xl p-6 md:p-8 max-w-2xl mx-auto space-y-4">
-    <div className="flex gap-3 items-center"><ShieldCheck className="text-accent"/><h3 className="text-xl font-bold">Вход в личную панель</h3></div>
-    <p className="text-sm text-muted">Введи DASHBOARD_TOKEN, который задаётся в секретах Cloudflare Worker. Он нужен, чтобы заявки и контакты не были открыты всем посетителям сайта.</p>
-    <form onSubmit={e=>{e.preventDefault();unlock()}} className="flex gap-2 flex-wrap sm:flex-nowrap">
-     <input type="password" className="field" autoComplete="off" placeholder="Секретный ключ панели" value={tokenInput} onChange={e=>setTokenInput(e.target.value)}/>
-     <button className="btn btn-primary" type="submit">Войти</button>
-    </form>
-    <p className="text-xs text-muted">Ключ сохраняется только на время текущей вкладки браузера, а не в публичном коде GitHub.</p>
-    <a className="text-accent text-sm underline" target="_blank" rel="noopener noreferrer" href="https://github.com/shauallieve/ai-client-hunter#telegram-setup">Как подключить Telegram-бота</a>
-   </section>:page==='settings'?<section className="glass rounded-3xl p-6 md:p-8 max-w-3xl space-y-5">
+   {page==='settings'?<section className="glass rounded-3xl p-6 md:p-8 max-w-3xl space-y-5">
     <h3 className="text-2xl font-bold">Настройки</h3>
     <label className="block">Минимальная релевантность: <b className="text-accent">{minScore}/100</b><input className="w-full mt-3" type="range" min="0" max="95" value={minScore} onChange={e=>setMinScore(Number(e.target.value))}/></label>
     <label className="block">Твой профиль для откликов<textarea className="field min-h-32 mt-2" value={profile} onChange={e=>setProfile(e.target.value)}/></label>
     <div className="border border-line rounded-2xl p-4 space-y-3">
       <h4 className="font-bold">Подключение Telegram</h4>
-      <p className="text-muted text-sm">1. Создай бота через @BotFather. 2. Добавь TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET и DASHBOARD_TOKEN в Secrets Cloudflare Worker. 3. Нажми кнопку ниже.</p>
-      <button className="btn btn-primary" onClick={()=>void setupWebhook()}>Активировать Telegram webhook</button>
-      {setupMessage&&<p className="text-sm text-accent">{setupMessage}</p>}
-      {botUsername&&<a href={'https://t.me/'+botUsername} target="_blank" rel="noopener noreferrer" className="text-accent underline text-sm">Открыть бота @{botUsername}</a>}
-      <p className="text-muted text-xs">Для чтения сообщений группы бот должен быть администратором либо иметь отключённый Privacy Mode. Пересланные сообщения в личный чат бота принимаются только от TELEGRAM_OWNER_ID.</p>
+      <p className="text-muted text-sm">Создай бота через @BotFather и добавь в Cloudflare два секрета: TELEGRAM_BOT_TOKEN и TELEGRAM_WEBHOOK_SECRET. DASHBOARD_TOKEN для просмотра больше не нужен.</p>
+      <p className="text-muted text-sm">Cloudflare автоматически устанавливает Telegram webhook по расписанию (каждые 10 минут), если оба секрета настроены. После этого добавь бота в разрешённые публичные группы или каналы.</p>
+      <p className="text-xs text-amber-200">Важно: сайт открыт всем по ссылке. Поэтому отображаются только заявки из Telegram с публичной ссылкой на исходное сообщение.</p>
+      <a className="text-accent underline text-sm" href="https://github.com/shauallieve/ai-client-hunter#telegram-setup" target="_blank" rel="noopener noreferrer">Подробная инструкция</a>
     </div>
     <p className="text-muted text-sm">Мониторинг работает только там, где Telegram разрешает боту видеть сообщения. Новые запросы сохраняются автоматически; список обновляется раз в минуту при открытой вкладке.</p>
     <button className="btn btn-primary" onClick={()=>setPage('leads')}>Готово</button>
@@ -143,18 +111,18 @@ export default function App(){
        {isTg(l.url)&&<a className="btn text-xs flex items-center gap-1" href={l.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={14}/>Исходное сообщение</a>}
        <button className="btn text-xs flex items-center gap-1" onClick={()=>mark(l.id,statuses[l.id]==='saved'?'new':'saved')}><Bookmark size={14}/>{statuses[l.id]==='saved'?'Сохранено':'Сохранить'}</button>
        <button className="btn text-xs flex items-center gap-1" onClick={()=>reply(l)}><MessageCircle size={14}/>Подготовить отклик</button>
-       <button title="Удалить" className="btn text-xs" onClick={()=>void remove(l)}><Trash2 size={14}/></button>
+       <button title="Скрыть только на этом устройстве" className="btn text-xs" onClick={()=>mark(l.id,'ignored')}><Trash2 size={14}/></button>
       </div>
      </article>):<div className="glass rounded-2xl p-10 text-center"><Inbox className="mx-auto text-muted mb-3" size={38}/><b>Пока нет Telegram-заявок</b><p className="text-muted text-sm mt-2">Проверь настройку бота, добавь его в чат с заказами или перешли ему публичный запрос самостоятельно.</p></div>}</div>
      <aside className="glass rounded-2xl p-5 lg:sticky lg:top-4 space-y-3"><h3 className="font-bold flex gap-2 items-center"><Send size={18} className="text-accent"/> Как поступают заявки?</h3>
        <p className="text-muted text-sm leading-6">1. Бот получает новое сообщение в подключённом чате.</p>
        <p className="text-muted text-sm leading-6">2. Если это запрос на разработку, сохраняет его.</p>
        <p className="text-muted text-sm leading-6">3. Ты открываешь автора или исходный пост и отвечаешь вручную.</p>
-       <p className="text-muted text-xs border-t border-line pt-4">Telegram Bot API не умеет искать по всему Telegram и не раскрывает скрытые аккаунты. Сообщения сохраняются не более 30 дней.</p>
+       <p className="text-muted text-xs border-t border-line pt-4">Сайт открыт всем по ссылке: отображаются только публичные Telegram-сообщения. Бот не ищет по всему Telegram. Сообщения хранятся до 30 дней.</p>
        <a className="text-accent underline text-sm" href="https://github.com/shauallieve/ai-client-hunter#telegram-setup" target="_blank" rel="noopener noreferrer">Инструкция подключения</a>
      </aside></div>
    </>}
-   <footer className="text-muted text-xs pt-10 pb-6">AI Client Hunter · Telegram-only · Без массовой отправки сообщений</footer>
+   <footer className="text-muted text-xs pt-10 pb-6">AI Client Hunter · Публичные Telegram-заявки · Без массовых рассылок</footer>
   </main>
   {selected&&<div className="fixed inset-0 bg-black/80 z-50 p-3 flex items-center justify-center" onMouseDown={e=>{if(e.target===e.currentTarget)setSelected(null)}}>
    <div className="glass rounded-3xl p-6 w-full max-w-2xl max-h-[90vh] overflow-auto">
