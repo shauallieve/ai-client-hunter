@@ -162,6 +162,34 @@ async function registerTelegramWebhook(env){
   const result=await response.json();
   if(!result.ok)throw new Error('Telegram setWebhook: '+String(result.description||'unknown error'));
 }
+async function telegramStatus(env){
+  if(!env.TELEGRAM_BOT_TOKEN)return json({ok:false,reason:'bot_token_missing'},503);
+  const api='https://api.telegram.org/bot'+env.TELEGRAM_BOT_TOKEN+'/';
+  const expected=String(env.PUBLIC_BASE_URL||'').replace(/\/$/,'')+'/api/telegram/webhook';
+  try{
+    const [meResp,hookResp]=await Promise.all([
+      fetch(api+'getMe',{signal:AbortSignal.timeout(6000)}),
+      fetch(api+'getWebhookInfo',{signal:AbortSignal.timeout(6000)})
+    ]);
+    const [me,hook]=await Promise.all([meResp.json(),hookResp.json()]);
+    if(!me.ok)return json({ok:false,reason:'telegram_token_invalid',detail:'Telegram rejected bot token'},200);
+    if(!hook.ok)return json({ok:false,reason:'telegram_webhook_info_failed',detail:String(hook.description||'unknown').slice(0,140)},200);
+    const current=hook.result||{};
+    return json({ok:true,botUsername:me.result?.username||null,
+      webhookRegistered:Boolean(current.url),
+      webhookMatchesExpected:current.url===expected,
+      pendingUpdates:current.pending_update_count||0,
+      lastDeliveryError:current.last_error_message?String(current.last_error_message).slice(0,200):null,
+      lastDeliveryErrorAt:current.last_error_date?new Date(current.last_error_date*1000).toISOString():null,
+      webhookExpectedHost:(()=>{try{return new URL(expected).host}catch{return null}})(),
+      nextStep:!current.url?'Telegram webhook is not registered; check Cloudflare Cron Triggers':current.url!==expected?
+        'Webhook points to another app; check Cloudflare Cron Trigger registration':
+        current.last_error_message?'Telegram delivery failed; inspect lastDeliveryError':'Webhook is registered; send /start to the correct bot'
+    });
+  }catch(error){
+    return json({ok:false,reason:'telegram_api_unreachable',detail:error instanceof Error?error.message.slice(0,140):'Unknown error'},503);
+  }
+}
 export default {
   async scheduled(_controller,env,ctx){
     ctx.waitUntil(registerTelegramWebhook(env));
@@ -171,6 +199,7 @@ export default {
     if(path==='/api/health')return json({ok:true,service:'ai-client-hunter',mode:'telegram-only',version:'telegram-public-v2',publicAccess:true,
       configured:{bot:Boolean(env.TELEGRAM_BOT_TOKEN&&env.TELEGRAM_WEBHOOK_SECRET),
         dashboard:Boolean(env.DASHBOARD_TOKEN),store:Boolean(env.LEAD_STORE)}});
+    if(path==='/api/telegram/status'&&request.method==='GET')return telegramStatus(env);
     if(path==='/api/setup/webhook'&&request.method==='POST'){
       if(!permitted(request,env))return json({error:'Unauthorized'},401);
       if(!env.TELEGRAM_BOT_TOKEN||!env.TELEGRAM_WEBHOOK_SECRET)return json({error:'Сначала добавь TELEGRAM_BOT_TOKEN и TELEGRAM_WEBHOOK_SECRET в секреты Worker'},503);
