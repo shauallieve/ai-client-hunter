@@ -30,6 +30,70 @@ function scoreText(raw){
   const score=skill.length&&intent.length?Math.min(99,46+Math.min(4,skill.length)*10+Math.min(3,intent.length)*7):0;
   return {score,reason:skill.length&&intent.length?'Технология: '+skill.slice(0,3).join(', ')+'; спрос: '+intent.slice(0,2).join(', '):'Нет явного заказа на разработку'};
 }
+// Public search settings can be read by everyone; editing requires a separate admin secret.
+const DEFAULT_SEARCH_CONFIG={
+  queries:['нужен разработчик','ищем программиста','сделать сайт',
+    'нужен телеграм бот','разработать бота','нужен сайт','нужен бот'],
+  includeAny:['сайт','лендинг','бота','ботов','бот для','чат-бот',
+    'telegram','телеграм','crm','автоматизац','веб-приложен','разработчик',
+    'программист','парсер','api','интеграц'],
+  intentAny:['нужен','нужна','нужно','ищем','ищу','требуется',
+    'сделать','разработать','создать','заказать','кто сможет','кто сделает','помогите'],
+  excludeAny:['ищу работу','ищу заказ','предлагаю услуги','делаю сайты на заказ'],
+  maxAgeHours:48,
+  minChars:35,
+  perQuery:18,
+  maxLeads:25
+};
+function validateSearchConfig(value){
+  if(!value||typeof value!=='object'||Array.isArray(value))return {error:'Ожидается объект настроек'};
+  function phrases(key,maxCount,maxLen,mandatory=false){
+    const input=value[key];
+    if(!Array.isArray(input)||input.length>maxCount||(mandatory&&input.length===0))throw Error('Неверное количество элементов: '+key);
+    const results=[],seen=new Set();
+    for(const word of input){
+      if(typeof word!=='string')throw Error('Неверное значение: '+key);
+      const clean=word.trim().replace(/\s+/g,' ');
+      if(clean.length<2||clean.length>maxLen||/[\x00-\x1f]/.test(clean))throw Error('Недопустимая длина или символы: '+key);
+      const lower=clean.toLowerCase();
+      if(!seen.has(lower)){results.push(clean);seen.add(lower)}
+    }
+    if(mandatory&&!results.length)throw Error('Добавь хотя бы один поисковый запрос');
+    return results;
+  }
+  function number(name,min,max){
+    const v=value[name];
+    if(!Number.isInteger(v)||v<min||v>max)throw Error('Неверное значение: '+name);
+    return v;
+  }
+  try{
+    return {config:{
+      queries:phrases('queries',12,90,true),
+      includeAny:phrases('includeAny',25,50),
+      intentAny:phrases('intentAny',25,50),
+      excludeAny:phrases('excludeAny',25,50),
+      maxAgeHours:number('maxAgeHours',12,168),
+      minChars:number('minChars',10,150),
+      perQuery:number('perQuery',5,30),
+      maxLeads:number('maxLeads',1,25)
+    }};
+  }catch(error){return {error:error instanceof Error?error.message:'Неверные настройки'}}
+}
+function scoreSearchPost(text,cfg){
+  const lower=text.toLowerCase();
+  if(text.length<cfg.minChars||cfg.excludeAny.some(w=>lower.includes(w.toLowerCase())))return {score:0,reason:'Исключено настройками'};
+  const keyHits=cfg.includeAny.filter(w=>lower.includes(w.toLowerCase()));
+  const intentHits=cfg.intentAny.filter(w=>lower.includes(w.toLowerCase()));
+  if(cfg.includeAny.length&&!keyHits.length)return {score:0,reason:'Нет совпадения с услугами'};
+  if(cfg.intentAny.length&&!intentHits.length)return {score:0,reason:'Нет признаков заказа'};
+  return {score:Math.min(99,65+keyHits.length*5+intentHits.length*5),
+    reason:'Совпадение с пользовательскими критериями'};
+}
+async function getSearchSettings(env){
+  const data=await store(env).fetch('https://internal/search-config');
+  if(!data.ok)throw Error('Cannot read search config');
+  return data.json();
+}
 function normalizedUsername(value){
   return typeof value==='string' && /^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(value)?value:null;
 }
@@ -136,6 +200,17 @@ export class LeadStore {
       await storage.put('lead:'+lead.id,lead);
       return json({ok:true});
     }
+    if(url.pathname==='/search-config'){
+      if(request.method==='GET')return json(await storage.get('settings:search')||{
+        config:DEFAULT_SEARCH_CONFIG,updatedAt:null
+      });
+      if(request.method==='POST'){
+        const config=await request.json();
+        const entry={config,updatedAt:new Date().toISOString()};
+        await storage.put('settings:search',entry);
+        return json(entry);
+      }
+    }
     if(url.pathname==='/search-report'){
       if(request.method==='POST'){
         const result=await request.json();
@@ -230,6 +305,26 @@ export default {
     if(path==='/api/health')return json({ok:true,service:'ai-client-hunter',mode:'telegram-only',version:'telegram-public-v2',publicAccess:true,
       configured:{bot:Boolean(env.TELEGRAM_BOT_TOKEN&&env.TELEGRAM_WEBHOOK_SECRET),
         dashboard:Boolean(env.DASHBOARD_TOKEN),store:Boolean(env.LEAD_STORE),searchImport:Boolean(env.TELEGRAM_IMPORT_TOKEN)}});
+    if(path==='/api/telegram/search-config'&&request.method==='GET'){
+      if(!env.LEAD_STORE)return json({error:'Storage unavailable'},503);
+      const settings=await getSearchSettings(env);
+      return json({...settings,adminConfigured:typeof env.SEARCH_ADMIN_TOKEN==='string'&&env.SEARCH_ADMIN_TOKEN.length>=24});
+    }
+    if(path==='/api/telegram/search-config'&&request.method==='PUT'){
+      const secret=env.SEARCH_ADMIN_TOKEN;
+      if(typeof secret!=='string'||secret.length<24)return json({error:'SEARCH_ADMIN_TOKEN ещё не настроен в Cloudflare'},503);
+      if(request.headers.get('authorization')!=='Bearer '+secret)return json({error:'Неверный ключ редактирования'},401);
+      if(!env.LEAD_STORE)return json({error:'Storage unavailable'},503);
+      if(Number(request.headers.get('content-length')||0)>12000)return json({error:'Слишком большой запрос'},413);
+      let payload;
+      try{payload=await request.json()}catch{return json({error:'Некорректный JSON'},400)}
+      const validated=validateSearchConfig(payload);
+      if(validated.error)return json({error:validated.error},400);
+      const result=await store(env).fetch('https://internal/search-config',{
+        method:'POST',body:JSON.stringify(validated.config)
+      });
+      return new Response(result.body,{status:result.status,headers:JSON_HEADERS});
+    }
     if(path==='/api/telegram/search-status'&&request.method==='GET'){
       if(!env.LEAD_STORE)return json({configured:Boolean(env.TELEGRAM_IMPORT_TOKEN),lastSearch:null});
       const result=await store(env).fetch('https://internal/search-report');
@@ -266,7 +361,8 @@ export default {
       if(!Array.isArray(payload?.leads)||payload.leads.length>25)return json({error:'Expected <=25 job posts'},400);
       const validUrl=/^https:\/\/t\.me\/([A-Za-z][A-Za-z0-9_]{4,31})\/([1-9]\d{0,12})$/;
       const validUsername=/^[A-Za-z][A-Za-z0-9_]{4,31}$/;
-      const cutoff=Date.now()-48*3600000;
+      const {config:searchConfig}=await getSearchSettings(env);
+      const cutoff=Date.now()-searchConfig.maxAgeHours*3600000;
       let saved=0,rejected=0;
       for(const item of payload.leads){
         if(!item||typeof item!=='object'){rejected++;continue}
@@ -274,8 +370,8 @@ export default {
         const match=url.match(validUrl);
         const date=Date.parse(String(item.published||''));
         const body=String(item.description||'').trim().slice(0,1500);
-        if(!match||!Number.isFinite(date)||date<cutoff||date>Date.now()+300000||body.length<20){rejected++;continue}
-        const relevance=scoreText(body);
+        if(!match||!Number.isFinite(date)||date<cutoff||date>Date.now()+300000||body.length<searchConfig.minChars){rejected++;continue}
+        const relevance=scoreSearchPost(body,searchConfig);
         if(relevance.score<60){rejected++;continue}
         // Only directly public Telegram message URLs; never persist private messages or numeric user IDs.
         const contactUsername=typeof item.contactUsername==='string'&&validUsername.test(item.contactUsername)?item.contactUsername:null;
