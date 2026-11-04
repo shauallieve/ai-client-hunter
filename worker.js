@@ -1,78 +1,168 @@
-// Cloudflare Workers: serves the API and the built React application's static assets.
-const FEEDS = [
-  { name: 'Freelancehunt', url: 'https://freelancehunt.com/projects.rss' },
-  { name: 'FL.ru', url: 'https://www.fl.ru/rss/all.xml' }
+// AI Client Hunter — Telegram-only ingestion on Cloudflare Workers.
+// No Telegram scanning outside chats the bot can legitimately read.
+const JSON_HEADERS={'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'};
+function json(value,status=200){return new Response(JSON.stringify(value),{status,headers:JSON_HEADERS})}
+function store(env){const ns=env.LEAD_STORE;return ns.get(ns.idFromName('telegram-leads-v1'))}
+function permitted(request,env){
+  const expected=env.DASHBOARD_TOKEN;
+  const supplied=request.headers.get('authorization')||'';
+  return typeof expected==='string' && expected.length>=20 && supplied==='Bearer '+expected;
+}
+const SERVICE=[
+  'сайт','сайта','сайты','лендинг','веб-приложен','web app','website','разработчик',
+  'программист','бота','бот для','чат-бот','telegram bot','телеграм бот','тг бот',
+  'crm','срм','автоматизац','интеграц','парсер','api','n8n','webhook',
+  'личный кабинет','админ-панел','мобильное приложен','ios приложение','android приложение',
+  'разработку приложения','разработать приложен','создать приложен'
 ];
-const entities = {'&amp;':'&','&lt;':'<','&gt;':'>','&quot;':'"','&apos;':"'",'&nbsp;':' '};
-function clean(value) {
-  return value.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/&(?:amp|lt|gt|quot|apos|nbsp|#\d+|#x[0-9a-f]+);/gi, m => {
-      if (entities[m]) return entities[m];
-      if (m.startsWith('&#')) {
-        const num = m[2]?.toLowerCase() === 'x' ? parseInt(m.slice(3),16) : parseInt(m.slice(2),10);
-        return num > 0 && num <= 0x10ffff ? String.fromCodePoint(num) : m;
-      }
-      return m;
-    }).replace(/\s+/g,' ').trim().slice(0,2400);
+const INTENT=[
+  'нужен','нужна','нужно','требуется','ищем','ищу','кто сделает','кто может сделать',
+  'посоветуйте','подскажите','заказ','разработать','разработку','сделать',
+  'заказать','помогите','ищем исполнителя','потріб','шукаємо','хто зробить',
+  'need developer','looking for developer','hiring developer','need a bot','need a website'
+];
+const SELLER=['предлагаю свои услуги','создам для вас','я разработчик','ищу клиентов','ищу заказы','возьму заказы','делаю сайты на заказ','продам курс'];
+function scoreText(raw){
+  const t=raw.toLowerCase();
+  if(SELLER.some(x=>t.includes(x)))return {score:0,reason:'Предложение услуг, а не заказ'};
+  const skill=SERVICE.filter(x=>t.includes(x));const intent=INTENT.filter(x=>t.includes(x));
+  // Inference from public texts only, not an LLM guarantee.
+  const score=skill.length&&intent.length?Math.min(99,46+Math.min(4,skill.length)*10+Math.min(3,intent.length)*7):0;
+  return {score,reason:skill.length&&intent.length?'Технология: '+skill.slice(0,3).join(', ')+'; спрос: '+intent.slice(0,2).join(', '):'Нет явного заказа на разработку'};
 }
-function tag(s, name) {
-  const safeName = name.replace(/[.*+?^$\{\}()|[\]\\]/g, '\\$&');
-  const match = s.match(new RegExp('<'+safeName+'(?:\\s[^>]*)?>([\\s\\S]*?)<\\/'+safeName+'>','i'));
-  return match ? match[1] : '';
+function normalizedUsername(value){
+  return typeof value==='string' && /^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(value)?value:null;
 }
-function parse(xml, source) {
-  const items = xml.match(/<item(?:\s[^>]*)?>[\s\S]*?<\/item>/gi) || [];
-  return items.slice(0, 90).map((item,i) => {
-    const title = clean(tag(item,'title'));
-    const description = clean(tag(item,'description') || tag(item,'content:encoded'));
-    const url = clean(tag(item,'link'));
-    const publishedString = tag(item,'pubDate') || tag(item,'dc:date');
-    const parsed = Date.parse(publishedString);
-    const published = Number.isFinite(parsed) ? new Date(parsed).toISOString() : new Date().toISOString();
-    const budget = (title+' '+description).match(/\d[\d\s,.]{0,12}\s?(?:₸|₽|UAH|USD|EUR|грн|руб|\$)/i)?.[0];
-    return {id:source+':'+(url||i),source,title,description,url,published,budget};
-  }).filter(item => item.title && /^https?:\/\//.test(item.url));
+function explicitContact(text){
+  // Only contacts explicitly offered in a message.
+  const match=text.match(/(?:пишите|писать|пишите в|связь|контакт|telegram|телеграм|личку|лс|dm|tg|тг)\s*(?:в|:|—|-|@)?\s*(@[A-Za-z][A-Za-z0-9_]{4,31})/i);
+  return match?normalizedUsername(match[1].slice(1)):null;
 }
-function json(data,status=200) {
-  return new Response(JSON.stringify(data), {status,headers:{
-    'content-type':'application/json; charset=utf-8',
-    'cache-control':'public, max-age=120',
-    'x-content-type-options':'nosniff'
-  }});
+function messageLink(chat,id){
+  const username=normalizedUsername(chat?.username);
+  return username?'https://t.me/'+username+'/'+id:'';
 }
-async function getLeads(request) {
-  const limit = Math.min(200,Math.max(10,Number(new URL(request.url).searchParams.get('limit'))||80));
-  const results = await Promise.all(FEEDS.map(async feed => {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8500);
-      let response;
-      try {
-        response = await fetch(feed.url, {
-          headers:{Accept:'application/rss+xml, application/xml, text/xml'},
-          signal:controller.signal
-        });
-      } finally {clearTimeout(timeout);}
-      if (!response.ok) throw Error('HTTP '+response.status);
-      const xml = await response.text();
-      if (xml.length>2_000_000) throw Error('RSS слишком большой');
-      const leads = parse(xml,feed.name);
-      if (!leads.length) throw Error('Нет доступных элементов RSS');
-      return {source:feed.name,status:'ok',leads};
-    } catch (e) {
-      return {source:feed.name,status:e instanceof Error?e.message:'Ошибка',leads:[]};
+function makeLead(msg,isForward){
+  const text=String(msg.text||msg.caption||'').trim().slice(0,1800);
+  if(!text)return null;
+  const relevance=scoreText(text);
+  if(relevance.score<50)return null;
+  const origin=msg.forward_origin;
+  const from=origin?.type==='user'?origin.sender_user:msg.from;
+  const author=normalizedUsername(from?.username);
+  const offered=explicitContact(text);
+  const contactUsername=offered||author||null;
+  let url=messageLink(msg.chat,msg.message_id);
+  let originName=msg.chat.title||'Telegram';
+  if(isForward && origin?.type==='channel'){
+    const original=messageLink(origin.chat,origin.message_id);
+    if(original)url=original;
+    originName=origin.chat?.title||originName;
+  }
+  // For private forwards with hidden origin, no fabricated source link or contact.
+  if(isForward && !origin)url='';
+  const published=new Date(Math.max(0,Number(msg.date)||Math.floor(Date.now()/1000))*1000).toISOString();
+  const id=(isForward?'forward:':'message:')+String(msg.chat.id)+':'+String(msg.message_id);
+  const title=text.split(/\n/)[0].slice(0,120)||'Запрос на разработку';
+  return {id,source:'Telegram',sourceChat:originName,title,description:text,url,published,
+    contactUsername,contactUrl:contactUsername?'https://t.me/'+contactUsername:'',
+    score:relevance.score,reasons:[relevance.reason],
+    category:'Telegram: разработка'};
+}
+async function postTelegram(env,chatId,text){
+  if(!env.TELEGRAM_BOT_TOKEN)return;
+  try{await fetch('https://api.telegram.org/bot'+env.TELEGRAM_BOT_TOKEN+'/sendMessage',{
+    method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({chat_id:chatId,text,disable_web_page_preview:true})
+  })}catch{/* User can verify webhook status in Telegram */}
+}
+async function webhook(request,env){
+  if(!env.TELEGRAM_WEBHOOK_SECRET || request.headers.get('x-telegram-bot-api-secret-token')!==env.TELEGRAM_WEBHOOK_SECRET)
+    return json({error:'Unauthorized Telegram webhook'},401);
+  if(!env.LEAD_STORE)return json({error:'Storage not bound'},503);
+  if(Number(request.headers.get('content-length')||0)>100000)return json({error:'Payload too large'},413);
+  let update;
+  try{update=await request.json()}catch{return json({error:'Invalid JSON'},400)}
+  const msg=update?.message||update?.channel_post||update?.edited_message||update?.edited_channel_post;
+  if(!msg?.chat?.id||!msg.message_id)return json({ok:true,ignored:'not a message'});
+  const chatType=msg.chat.type;
+  if(chatType==='private'){
+    const senderId=String(msg.from?.id||'');
+    const cmd=String(msg.text||'').trim();
+    if(cmd.startsWith('/start')||cmd.startsWith('/whoami')){
+      await postTelegram(env,msg.chat.id,'AI Client Hunter. Твой Telegram ID: '+senderId+
+        '\nПерешли сюда сообщение с запросом на разработку из любого доступного тебе чата. Доступ разрешён владельцу бота, указанному в TELEGRAM_OWNER_ID.');
+      return json({ok:true});
     }
-  }));
-  const leads=results.flatMap(r=>r.leads).sort((a,b)=>b.published.localeCompare(a.published)).slice(0,limit);
-  return json({updatedAt:new Date().toISOString(),sources:results.map(r=>({source:r.source,status:r.status,count:r.leads.length})),leads});
+    if(!env.TELEGRAM_OWNER_ID||senderId!==String(env.TELEGRAM_OWNER_ID))return json({ok:true,ignored:'not owner'});
+    const forward=Boolean(msg.forward_origin||msg.forward_date);
+    if(!forward)return json({ok:true,ignored:'only forwarded leads in DMs'});
+    const lead=makeLead(msg,true);
+    if(lead){await store(env).fetch('https://internal/ingest',{method:'POST',body:JSON.stringify(lead)});
+      await postTelegram(env,msg.chat.id,'Заявка сохранена ✅\n'+lead.title.slice(0,100)+
+        (lead.contactUsername?'\nКонтакт: @'+lead.contactUsername:'\nПрямой контакт не раскрыт'));
+    }else await postTelegram(env,msg.chat.id,'Это сообщение не похоже на заказ по разработке. Не сохраняю.');
+    return json({ok:true,found:Boolean(lead)});
+  }
+  if(!['group','supergroup','channel'].includes(chatType))return json({ok:true,ignored:'unsupported chat type'});
+  if(env.TELEGRAM_ALLOWED_CHATS){
+    const ids=env.TELEGRAM_ALLOWED_CHATS.split(',').map(x=>x.trim());
+    if(!ids.includes(String(msg.chat.id)))return json({ok:true,ignored:'chat not allowed'});
+  }
+  const lead=makeLead(msg,false);
+  if(lead)await store(env).fetch('https://internal/ingest',{method:'POST',body:JSON.stringify(lead)});
+  return json({ok:true,found:Boolean(lead)});
+}
+export class LeadStore {
+  constructor(state){this.state=state}
+  async fetch(request){
+    const url=new URL(request.url);
+    const storage=this.state.storage;
+    if(url.pathname==='/ingest'&&request.method==='POST'){
+      const lead=await request.json();
+      if(!lead?.id||!lead.title||lead.source!=='Telegram')return json({error:'Bad lead'},400);
+      await storage.put('lead:'+lead.id,lead);
+      return json({ok:true});
+    }
+    if(url.pathname==='/list'){
+      const items=await storage.list({prefix:'lead:',limit:1000});
+      const cutoff=Date.now()-30*86400000,leads=[];
+      for(const [key,l] of items){
+        if(Date.parse(l.published||'')<cutoff){await storage.delete(key);continue}
+        leads.push(l);
+      }
+      leads.sort((a,b)=>b.published.localeCompare(a.published));
+      return json({leads:leads.slice(0,300),count:leads.length});
+    }
+    if(url.pathname==='/delete'&&request.method==='POST'){
+      const {id}=await request.json();
+      if(typeof id!=='string')return json({error:'Bad id'},400);
+      await storage.delete('lead:'+id);
+      return json({ok:true});
+    }
+    return json({error:'Not found'},404);
+  }
 }
 export default {
-  async fetch(request,env) {
-    const url=new URL(request.url);
-    if(url.pathname==='/api/health' && request.method==='GET') return json({ok:true,service:'ai-client-hunter',version:'workers-api-v2'});
-    if(url.pathname==='/api/leads' && request.method==='GET') return getLeads(request);
-    if(url.pathname.startsWith('/api/')) return json({error:'API endpoint not found'},404);
+  async fetch(request,env){
+    const url=new URL(request.url),path=url.pathname;
+    if(path==='/api/health')return json({ok:true,service:'ai-client-hunter',mode:'telegram-only',version:'telegram-v1',
+      configured:{bot:Boolean(env.TELEGRAM_BOT_TOKEN&&env.TELEGRAM_WEBHOOK_SECRET),
+        dashboard:Boolean(env.DASHBOARD_TOKEN),store:Boolean(env.LEAD_STORE)}});
+    if(path==='/api/telegram/webhook'&&request.method==='POST')return webhook(request,env);
+    if(path==='/api/leads'&&request.method==='GET'){
+      if(!permitted(request,env))return json({error:env.DASHBOARD_TOKEN?'unauthorized':'dashboard_token_not_configured'},env.DASHBOARD_TOKEN?401:503);
+      const data=await store(env).fetch('https://internal/list');
+      const result=await data.json();
+      return json({updatedAt:new Date().toISOString(),sources:[{source:'Telegram',status:'ok',count:result.count}],
+        leads:result.leads});
+    }
+    if(path==='/api/leads'&&request.method==='DELETE'){
+      if(!permitted(request,env))return json({error:'Unauthorized'},401);
+      const data=await request.json();
+      return store(env).fetch('https://internal/delete',{method:'POST',body:JSON.stringify({id:data.id})});
+    }
+    if(path.startsWith('/api/'))return json({error:'Not found'},404);
     return env.ASSETS.fetch(request);
   }
 };
