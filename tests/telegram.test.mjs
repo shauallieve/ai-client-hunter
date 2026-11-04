@@ -35,10 +35,11 @@ test('health endpoint is JSON',async()=>{
   assert.match(response.headers.get('content-type'),/json/);
   assert.equal((await response.json()).mode,'telegram-only');
 });
-test('unauthorized dashboard cannot read leads',async()=>{
+test('public dashboard can read leads without token',async()=>{
   const {env}=fixture();
   const response=await worker.fetch(new Request(url+'/api/leads'),env);
-  assert.equal(response.status,401);
+  assert.equal(response.status,200);
+  assert.deepEqual((await response.json()).leads,[]);
 });
 test('reject webhook requests without Telegram signature',async()=>{
   const {env}=fixture();
@@ -59,9 +60,7 @@ test('Telegram group job is saved with public contact and source link',async()=>
   assert.equal(data.length,1);
   assert.equal(data[0].contactUrl,'https://t.me/client_public');
   assert.equal(data[0].url,'https://t.me/jobs_programmers/56');
-  const auth=await worker.fetch(new Request(url+'/api/leads',{headers:{
-    Authorization:'Bearer '+env.DASHBOARD_TOKEN
-  }}),env);
+  const auth=await worker.fetch(new Request(url+'/api/leads'),env);
   assert.equal((await auth.json()).leads.length,1);
 });
 test('non-sales message is ignored',async()=>{
@@ -74,4 +73,23 @@ test('non-sales message is ignored',async()=>{
   }})});
   await worker.fetch(req,env);
   assert.equal(data.length,0);
+});
+
+test('ignore leads from private groups in public mode',async()=>{
+  const {env,data}=fixture();
+  const req=new Request(url+'/api/telegram/webhook',{method:'POST',headers:{
+    'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':'sample-telegram-secret'
+  },body:JSON.stringify({message:{
+    message_id:251,chat:{id:-100987,type:'supergroup',title:'Закрытый чат'},
+    from:{id:555,username:'public_dev_client'},date:Math.floor(Date.now()/1000),
+    text:'Нужен разработчик, сделайте мне Telegram-бота!'
+  }})});
+  const result=await worker.fetch(req,env);
+  assert.equal(result.status,200);
+  assert.equal(data.length,0);
+});
+test('destructive operations remain protected',async()=>{
+  const {env}=fixture();
+  const result=await worker.fetch(new Request(url+'/api/leads',{method:'DELETE',body:JSON.stringify({id:'x'})}),env);
+  assert.equal(result.status,401);
 });
