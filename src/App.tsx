@@ -1,49 +1,149 @@
-import {useEffect,useMemo,useState} from 'react';
-import {Radar,RefreshCw,Search,Bookmark,ExternalLink,Copy,Plus,Download,Settings2,Inbox,Clock,MessageCircle,X,AlertTriangle} from 'lucide-react';
-import {classify,dedupe,draftReply,safeUrl} from './logic';
-import {defaults,type Lead,type Preferences,type Status} from './types';
+import {useCallback,useEffect,useMemo,useState} from 'react';
+import {Radar,RefreshCw,Search,Bookmark,ExternalLink,Copy,Settings2,Inbox,Clock,MessageCircle,ShieldCheck,Send,LockKeyhole,Trash2,X,CheckCircle2,AlertTriangle} from 'lucide-react';
+import type {Lead,Status} from './types';
 
-const PREF='ach-preferences-1',STATE='ach-status-1',MANUAL='ach-manual-1';
-function restore<T>(key:string,fallback:T):T {try {const s=localStorage.getItem(key);return s?JSON.parse(s) as T:fallback} catch{return fallback}}
-const date=(s:string)=>{const d=new Date(s);return Number.isNaN(d.getTime())?'Неизвестно':new Intl.DateTimeFormat('ru-RU',{dateStyle:'medium',timeStyle:'short'}).format(d)};
-function exportCSV(leads:Lead[]){const rows=[['Название','Источник','Ссылка','Дата','Категория','Рейтинг','Бюджет'],...leads.map(l=>[l.title,l.source,l.url,l.published,l.category||'',String(l.score||0),l.budget||''])];const csv='\ufeff'+rows.map(r=>r.map(x=>'"'+String(x).replace(/"/g,'""')+'"').join(';')).join('\r\n');const u=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=u;a.download='client-hunter-leads.csv';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)}
+type TelegramLead=Lead&{sourceChat?:string;contactUsername?:string|null;contactUrl?:string;score:number;reasons?:string[]};
+const STATUS_KEY='ach-telegram-status-1',PROFILE_KEY='ach-telegram-profile-1',TOKEN_KEY='ach-dashboard-session';
+function saved<T>(key:string,fallback:T):T{try{const value=localStorage.getItem(key);return value?JSON.parse(value) as T:fallback}catch{return fallback}}
+const fmtDate=(value:string)=>{const date=new Date(value);return Number.isNaN(date.valueOf())?'Без даты':new Intl.DateTimeFormat('ru-RU',{dateStyle:'medium',timeStyle:'short'}).format(date)};
+const defaultProfile='Разрабатываю сайты, Telegram-ботов и автоматизации на React/TypeScript. Могу уточнить задачу, предложить этапы и заранее согласовать стоимость.';
+const isTg=(value?:string)=>{try{const u=new URL(value||'');return u.protocol==='https:'&&['t.me','telegram.me'].includes(u.hostname)}catch{return false}};
+function leadReply(l:TelegramLead,profile:string){
+ return 'Здравствуйте! Увидел ваш запрос: «'+l.title.slice(0,110)+'».\n\n'+
+ profile.trim()+'\n\nПодскажите, пожалуйста, задача ещё актуальна? Если да, какие функции нужны в первую очередь и есть ли ориентир по бюджету?\n\nМогу предложить план реализации и стоимость.';
+}
 export default function App(){
- const [prefs,setPrefs]=useState<Preferences>(()=>restore(PREF,defaults));
- const [statuses,setStatuses]=useState<Record<string,Status>>(()=>restore(STATE,{}));
- const [manual,setManual]=useState<Lead[]>(()=>restore(MANUAL,[]));
- const [remote,setRemote]=useState<Lead[]>([]);
+ const [token,setToken]=useState(()=>{try{return sessionStorage.getItem(TOKEN_KEY)||''}catch{return ''}});
+ const [tokenInput,setTokenInput]=useState('');
+ const [leads,setLeads]=useState<TelegramLead[]>([]);
  const [sources,setSources]=useState<{source:string;status:string;count:number}[]>([]);
+ const [health,setHealth]=useState<{ok:boolean;mode?:string;configured?:{bot:boolean;dashboard:boolean;store:boolean}}|null>(null);
+ const [statuses,setStatuses]=useState<Record<string,Status>>(()=>saved(STATUS_KEY,{}));
+ const [profile,setProfile]=useState(()=>saved(PROFILE_KEY,defaultProfile));
+ const [minScore,setMinScore]=useState(55);
+ const [query,setQuery]=useState('');
+ const [tab,setTab]=useState<'all'|'saved'|'contacted'>('all');
+ const [page,setPage]=useState<'leads'|'settings'>('leads');
+ const [sort,setSort]=useState<'score'|'recent'>('recent');
  const [loading,setLoading]=useState(false),[error,setError]=useState(''),[updated,setUpdated]=useState('');
- const [query,setQuery]=useState(''),[tab,setTab]=useState<'all'|'saved'|'contacted'>('all'),[page,setPage]=useState<'leads'|'settings'>('leads');
- const [sort,setSort]=useState<'score'|'fresh'>('score');
- const [selected,setSelected]=useState<Lead|null>(null),[draft,setDraft]=useState('');
- const [adding,setAdding]=useState(false),[entry,setEntry]=useState({title:'',description:'',url:'',budget:''});
- useEffect(()=>{localStorage.setItem(PREF,JSON.stringify(prefs))},[prefs]);
- useEffect(()=>{localStorage.setItem(STATE,JSON.stringify(statuses))},[statuses]);
- useEffect(()=>{localStorage.setItem(MANUAL,JSON.stringify(manual))},[manual]);
- async function refresh(){setLoading(true);setError('');try{const res=await fetch('/api/leads?limit=160');if(!res.ok)throw new Error('HTTP '+res.status);const mime=res.headers.get('content-type')||'';if(!mime.includes('application/json'))throw new Error('Cloudflare вернул HTML вместо JSON. Проверь Workers deployment, /api/health и /api/leads.');const data=await res.json() as {leads:Lead[];sources:{source:string;status:string;count:number}[];updatedAt:string};setRemote(data.leads||[]);setSources(data.sources||[]);setUpdated(data.updatedAt||'');if(!(data.leads||[]).length)setError('Ленты пока не отдали объявления. Добавь ссылку вручную или повтори позже.')}catch(e){setError('Не удалось загрузить заказы: '+(e instanceof Error?e.message:String(e)))}finally{setLoading(false)}}
- useEffect(()=>{void refresh()},[]);
- const all=useMemo(()=>dedupe([...manual,...remote]).map(l=>classify(l,prefs)),[manual,remote,prefs]);
- const filtered=useMemo(()=>all.filter(l=>(l.score||0)>=prefs.minScore).filter(l=>tab==='all'||(tab==='saved'?['saved','contacted','won'].includes(statuses[l.id]):statuses[l.id]==='contacted')).filter(l=>!query||(`${l.title} ${l.description} ${l.source}`).toLowerCase().includes(query.toLowerCase())).sort((a,b)=>sort==='score'?(b.score||0)-(a.score||0):b.published.localeCompare(a.published)),[all,prefs.minScore,statuses,tab,query,sort]);
- const saved=all.filter(l=>['saved','contacted','won'].includes(statuses[l.id])).length;
- const contacted=all.filter(l=>statuses[l.id]==='contacted').length;
- function status(l:Lead,s:Status){setStatuses(a=>({...a,[l.id]:s}))}
- function add(){const url=safeUrl(entry.url);if(!entry.title.trim()||!url){setError('Укажи название и ссылку http(s).');return}setManual(a=>[{id:'manual:'+crypto.randomUUID(),source:'Добавлено вручную',title:entry.title.trim(),description:entry.description.trim(),url,published:new Date().toISOString(),budget:entry.budget||undefined},...a]);setEntry({title:'',description:'',url:'',budget:''});setAdding(false);setError('')}
- function openDraft(l:Lead){setSelected(l);setDraft(draftReply(l,prefs.profile))}
- async function copy(){try{await navigator.clipboard.writeText(draft)}catch{setError('Копирование недоступно: выдели текст вручную.')}}
- return <div className="min-h-screen bg-base"><main className="max-w-7xl mx-auto px-4 md:px-8 py-6">
- <header className="flex flex-wrap items-center justify-between gap-4 mb-8"><div className="flex gap-3 items-center"><div className="rounded-2xl bg-accent text-[#10200d] p-3"><Radar size={25}/></div><div><h1 className="text-xl font-extrabold">Client<span className="text-accent">Hunter</span> <small className="text-xs text-muted">MVP 1.0</small></h1><p className="text-muted text-xs">Найди задачу. Предложи решение.</p></div></div><nav className="flex gap-2"><button className="btn" onClick={()=>setPage('leads')}>Лиды</button><button className="btn" onClick={()=>setPage('settings')}><Settings2 className="inline" size={15}/> Настройки</button></nav></header>
- {page==='settings'?<section className="glass rounded-3xl p-5 md:p-8 max-w-3xl space-y-6"><h2 className="text-2xl font-bold">Настрой свой поиск</h2><p className="text-muted text-sm">Рейтинг показывает совпадение ключевых слов, а не вероятность заключить сделку.</p><div><strong>Услуги</strong><div className="grid sm:grid-cols-2 gap-3 mt-3">{defaults.services.map(s=><label key={s} className="rounded-xl border border-line p-3 flex gap-2"><input type="checkbox" checked={prefs.services.includes(s)} onChange={e=>setPrefs(p=>({...p,services:e.target.checked?[...p.services,s]:p.services.filter(x=>x!==s)}))}/>{s}</label>)}</div></div><label className="block">Минимальный рейтинг: <b className="text-accent">{prefs.minScore}</b><input className="block w-full accent-lime-300 mt-2" type="range" min="0" max="95" value={prefs.minScore} onChange={e=>setPrefs(p=>({...p,minScore:Number(e.target.value)}))}/></label><label className="block">Дополнительные слова<input className="field mt-2" value={prefs.keywords} onChange={e=>setPrefs(p=>({...p,keywords:e.target.value}))} placeholder="cloudflare, kaspi, бронирование"/></label><label className="block">Исключать слова<input className="field mt-2" value={prefs.exclude} onChange={e=>setPrefs(p=>({...p,exclude:e.target.value}))}/></label><label className="block">Твой профиль для черновика ответа<textarea className="field mt-2 min-h-32" value={prefs.profile} onChange={e=>setPrefs(p=>({...p,profile:e.target.value}))}/></label><div className="flex justify-between gap-3 flex-wrap"><button className="btn" onClick={()=>setPrefs(defaults)}>Сбросить</button><button className="btn btn-primary" onClick={()=>setPage('leads')}>Сохранено — к лидам</button></div></section>:<>
- <section className="rounded-3xl border border-[#34423b] bg-gradient-to-br from-[#1c2925] via-[#111a23] to-[#101623] p-6 md:p-10 mb-6"><p className="text-accent text-xs uppercase tracking-widest font-bold mb-3">Публичные заказы · поиск спроса</p><h2 className="text-2xl md:text-4xl font-extrabold">Заказы уже опубликованы.<br/><span className="text-accent">Осталось найти свои.</span></h2><p className="text-muted text-sm mt-3 max-w-xl">Подбирай заказы из открытых лент, сохраняй подходящие задачи, готовь персональные отклики. Отправку выполняешь самостоятельно.</p><div className="mt-6 flex gap-2 flex-wrap"><button className="btn btn-primary flex items-center gap-2" disabled={loading} onClick={()=>void refresh()}><RefreshCw size={16}/>{loading?'Загружаю...':'Найти заказы'}</button><button className="btn flex items-center gap-2" onClick={()=>setAdding(true)}><Plus size={16}/>Добавить ссылку</button></div></section>
- <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">{[['Всего найдено',all.length],['Рейтинг 70+',all.filter(l=>(l.score||0)>=70).length],['Сохранено',saved],['Отклик отправлен',contacted]].map(([label,n])=><div className="glass rounded-2xl p-4" key={label}><div className="text-muted text-xs">{label}</div><div className="text-3xl font-bold mt-2">{n}</div></div>)}</div>
- {error&&<div className="border border-orange-800 rounded-xl p-3 mb-5 text-sm text-orange-200 flex gap-2"><AlertTriangle size={17}/>{error}</div>}
- <div className="flex flex-wrap justify-between gap-2 mb-4"><div className="flex gap-2">{([{id:'all',title:'Все'},{id:'saved',title:'Избранное'},{id:'contacted',title:'Откликнулся'}] as const).map(x=><button key={x.id} className={tab===x.id?'btn btn-primary':'btn'} onClick={()=>setTab(x.id)}>{x.title}</button>)}</div><button className="btn flex items-center gap-1" disabled={!filtered.length} onClick={()=>exportCSV(filtered)}><Download size={15}/>CSV</button></div>
- <div className="grid md:grid-cols-[1fr_200px] gap-3 mb-4"><div className="relative"><Search className="absolute top-3 left-3 text-muted" size={18}/><input className="field !pl-10" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Поиск по заказам..."/></div><select className="field" value={sort} onChange={e=>setSort(e.target.value as 'score'|'fresh')}><option value="score">Сначала подходящие</option><option value="fresh">Сначала новые</option></select></div>
- <div className="flex flex-wrap items-center gap-2 text-xs text-muted mb-5">От {prefs.minScore} баллов · {filtered.length} заявок {updated&&'· Обновлено '+date(updated)}{sources.map(s=><span key={s.source} title={s.status} className="tag">{s.source}: {s.status==='ok'?s.count:'недоступен'}</span>)}</div>
- <div className="grid lg:grid-cols-[minmax(0,1fr)_280px] gap-5 items-start"><div className="space-y-3">{filtered.length?filtered.map(l=><article className="glass rounded-2xl p-5" key={l.id}><div className="flex justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap gap-2 mb-3"><span className="tag">{l.source}</span><span className="tag">{l.category}</span>{l.budget&&<span className="tag">{l.budget}</span>}</div><h3 className="font-bold text-lg">{l.title}</h3><p className="text-muted text-sm mt-2 leading-6 line-clamp-3">{l.description||'Подробности по ссылке'}</p></div><div className="rounded-xl bg-[#202c26] text-center h-fit px-3 py-2 shrink-0"><b className="text-accent text-xl">{l.score}</b><div className="text-[10px]">совпадение</div></div></div><div className="flex justify-between gap-2 flex-wrap items-center mt-5"><span className="text-muted text-xs flex gap-1 items-center"><Clock size={13}/>{date(l.published)}</span><div className="flex gap-2 flex-wrap"><button className="btn text-xs flex gap-1 items-center" onClick={()=>status(l,statuses[l.id]==='saved'?'new':'saved')}><Bookmark size={13}/>{statuses[l.id]==='saved'?'Сохранено':'Сохранить'}</button><button className="btn text-xs flex gap-1 items-center" onClick={()=>openDraft(l)}><MessageCircle size={13}/>Отклик</button><a className="btn text-xs flex gap-1 items-center" href={l.url} target="_blank" rel="noopener noreferrer">Источник <ExternalLink size={13}/></a></div></div></article>):<div className="glass rounded-2xl p-10 text-center"><Inbox className="mx-auto text-muted mb-3" size={36}/><b>Нет подходящих заявок</b><p className="text-sm text-muted mt-2">Уменьши рейтинг, проверь источники или добавь ссылку вручную.</p></div>}</div><aside className="glass rounded-2xl p-5 lg:sticky lg:top-4"><h3 className="font-bold mb-3">Как это работает</h3><p className="text-muted text-sm leading-6">Публичная лента → рейтинг по ключевым словам → проверка исходной заявки → черновик ответа.</p><hr className="border-line my-4"/><p className="text-sm">Источники: Freelancehunt RSS, FL.ru RSS, ручное добавление из Threads и Telegram.</p><hr className="border-line my-4"/><p className="text-muted text-xs leading-5">Внешние ленты могут быть недоступны. Проверяй дату и наличие заказа на исходном сайте. Автоматической рассылки нет.</p></aside></div>
- </>}
- <footer className="mt-10 text-muted text-xs pb-6">AI Client Hunter · Настройки и статусы хранятся в этом браузере</footer></main>
- {selected&&<div className="fixed inset-0 bg-black/80 z-50 p-3 flex items-center justify-center" onMouseDown={e=>{if(e.target===e.currentTarget)setSelected(null)}}><div className="glass rounded-3xl p-6 w-full max-w-2xl max-h-[90vh] overflow-auto"><div className="flex justify-between gap-3"><h3 className="text-xl font-bold">Отклик: {selected.title}</h3><button className="btn" onClick={()=>setSelected(null)}><X size={16}/></button></div><p className="text-muted text-sm my-3">Совпадение: {selected.reasons?.join(' · ')||'Нет пояснений'}</p><textarea className="field min-h-64" value={draft} onChange={e=>setDraft(e.target.value)}/><p className="text-muted text-xs mt-2">Это шаблон, не AI-генерация. Проверь и исправь перед отправкой.</p><div className="flex flex-wrap gap-2 mt-5"><button className="btn btn-primary flex gap-2 items-center" onClick={()=>void copy()}><Copy size={15}/>Копировать</button><a className="btn" href={selected.url} target="_blank" rel="noopener noreferrer">Открыть заказ</a><button className="btn" onClick={()=>{status(selected,'contacted');setSelected(null)}}>Отметить как отправленный</button></div></div></div>}
- {adding&&<div className="fixed inset-0 bg-black/80 z-50 p-3 flex items-center justify-center" onMouseDown={e=>{if(e.target===e.currentTarget)setAdding(false)}}><div className="glass rounded-3xl p-6 w-full max-w-lg space-y-4"><div className="flex justify-between"><h3 className="text-xl font-bold">Добавить заказ</h3><button className="btn" onClick={()=>setAdding(false)}><X size={16}/></button></div><input className="field" placeholder="Название *" value={entry.title} onChange={e=>setEntry(p=>({...p,title:e.target.value}))}/><input className="field" placeholder="https://... *" value={entry.url} onChange={e=>setEntry(p=>({...p,url:e.target.value}))}/><input className="field" placeholder="Бюджет (необязательно)" value={entry.budget} onChange={e=>setEntry(p=>({...p,budget:e.target.value}))}/><textarea className="field min-h-24" placeholder="Описание" value={entry.description} onChange={e=>setEntry(p=>({...p,description:e.target.value}))}/><div className="flex justify-end gap-2"><button className="btn" onClick={()=>setAdding(false)}>Отмена</button><button className="btn btn-primary" onClick={add}>Добавить</button></div></div></div>}
+ const [selected,setSelected]=useState<TelegramLead|null>(null),[draft,setDraft]=useState('');
+ useEffect(()=>{localStorage.setItem(STATUS_KEY,JSON.stringify(statuses))},[statuses]);
+ useEffect(()=>{localStorage.setItem(PROFILE_KEY,JSON.stringify(profile))},[profile]);
+ useEffect(()=>{void fetch('/api/health').then(r=>r.json()).then(setHealth).catch(()=>setHealth(null))},[]);
+ const load=useCallback(async(auth:string)=>{
+  if(!auth)return;
+  setLoading(true);setError('');
+  try{
+    const response=await fetch('/api/leads',{headers:{Authorization:'Bearer '+auth,Accept:'application/json'},cache:'no-store'});
+    const type=response.headers.get('content-type')||'';
+    if(!type.includes('json'))throw new Error('Сервер вернул HTML вместо API. Проверь последний Workers deployment.');
+    const data=await response.json();
+    if(response.status===401)throw new Error('Неверный ключ панели. Проверь DASHBOARD_TOKEN в Cloudflare.');
+    if(!response.ok)throw new Error(data.error||('Ошибка API '+response.status));
+    setLeads(Array.isArray(data.leads)?data.leads:[]);
+    setSources(data.sources||[]);
+    setUpdated(data.updatedAt||'');
+  }catch(err){setError(err instanceof Error?err.message:String(err))}
+  finally{setLoading(false)}
+ },[]);
+ useEffect(()=>{if(!token)return;void load(token);const timer=setInterval(()=>{if(!document.hidden)void load(token)},60000);return()=>clearInterval(timer)},[token,load]);
+ function unlock(){const t=tokenInput.trim();if(!t)return;setToken(t);setTokenInput('');try{sessionStorage.setItem(TOKEN_KEY,t)}catch{}}
+ function lock(){setToken('');setLeads([]);setError('');try{sessionStorage.removeItem(TOKEN_KEY)}catch{}}
+ function mark(id:string,status:Status){setStatuses(s=>({...s,[id]:status}))}
+ function reply(l:TelegramLead){setSelected(l);setDraft(leadReply(l,profile))}
+ async function copy(){try{await navigator.clipboard.writeText(draft)}catch{setError('Не удалось скопировать. Выдели текст и скопируй вручную.')}}
+ async function remove(l:TelegramLead){
+  if(!window.confirm('Удалить эту заявку из базы?'))return;
+  try{const r=await fetch('/api/leads',{method:'DELETE',headers:{Authorization:'Bearer '+token,'content-type':'application/json'},body:JSON.stringify({id:l.id})});if(!r.ok)throw Error('Удаление не удалось');setLeads(items=>items.filter(x=>x.id!==l.id))}catch(e){setError(e instanceof Error?e.message:String(e))}
+ }
+ const shown=useMemo(()=>leads.filter(l=>(l.score||0)>=minScore)
+  .filter(l=>tab==='all'||(tab==='saved'?['saved','contacted','won'].includes(statuses[l.id]):statuses[l.id]==='contacted'))
+  .filter(l=>!query||[l.title,l.description,l.sourceChat,l.contactUsername].join(' ').toLowerCase().includes(query.toLowerCase()))
+  .sort((a,b)=>sort==='score'?(b.score||0)-(a.score||0):b.published.localeCompare(a.published)),
+  [leads,minScore,tab,statuses,query,sort]);
+ const contacted=leads.filter(l=>statuses[l.id]==='contacted').length;
+ const savedCount=leads.filter(l=>['saved','contacted','won'].includes(statuses[l.id])).length;
+ return <div className="min-h-screen bg-base">
+  <main className="max-w-7xl mx-auto px-4 md:px-8 py-6">
+   <header className="flex flex-wrap justify-between items-center gap-4 mb-8">
+    <div className="flex gap-3 items-center"><div className="rounded-2xl bg-accent text-[#10200d] p-3"><Radar size={25}/></div><div>
+      <h1 className="text-xl font-extrabold">Client<span className="text-accent">Hunter</span> <span className="text-xs text-muted">Telegram edition</span></h1>
+      <p className="text-muted text-xs">Ищи реальные запросы на разработку в Telegram</p></div></div>
+    <nav className="flex gap-2"><button className="btn" onClick={()=>setPage('leads')}>Лиды</button><button className="btn" onClick={()=>setPage('settings')}><Settings2 className="inline" size={15}/> Настройки</button></nav>
+   </header>
+   <section className="rounded-3xl border border-[#34423b] bg-gradient-to-br from-[#1c2925] via-[#111a23] to-[#101623] p-6 md:p-10 mb-6">
+    <div className="text-accent text-xs tracking-widest font-bold uppercase mb-3">Telegram · только реальные сообщения</div>
+    <h2 className="text-2xl md:text-4xl font-extrabold">Клиенты уже ищут разработчиков.<br/><span className="text-accent">Лови подходящие заявки.</span></h2>
+    <p className="text-muted text-sm mt-3 max-w-2xl">Бот отслеживает новые сообщения в подключённых группах и каналах. Показываем автора через публичный @username и ссылку на сообщение, если Telegram их предоставляет. Массовой рассылки нет.</p>
+    {token&&<div className="flex gap-2 mt-6 flex-wrap"><button className="btn btn-primary flex gap-2 items-center" onClick={()=>void load(token)} disabled={loading}><RefreshCw size={16}/>{loading?'Проверяю...':'Обновить лиды'}</button><button className="btn" onClick={lock}><LockKeyhole size={15} className="inline"/> Закрыть панель</button></div>}
+   </section>
+   {health&&<div className="flex gap-2 flex-wrap mb-5 text-xs">
+    <span className="tag">API: {health.mode||'неизвестно'}</span>
+    <span className="tag">Telegram webhook: {health.configured?.bot?'секреты настроены':'нужно настроить'}</span>
+    <span className="tag">Панель: {health.configured?.dashboard?'защищена':'ключ не настроен'}</span>
+    <span className="tag">Хранилище: {health.configured?.store?'подключено':'не подключено'}</span>
+   </div>}
+   {!token?<section className="glass rounded-3xl p-6 md:p-8 max-w-2xl mx-auto space-y-4">
+    <div className="flex gap-3 items-center"><ShieldCheck className="text-accent"/><h3 className="text-xl font-bold">Вход в личную панель</h3></div>
+    <p className="text-sm text-muted">Введи DASHBOARD_TOKEN, который задаётся в секретах Cloudflare Worker. Он нужен, чтобы заявки и контакты не были открыты всем посетителям сайта.</p>
+    <form onSubmit={e=>{e.preventDefault();unlock()}} className="flex gap-2 flex-wrap sm:flex-nowrap">
+     <input type="password" className="field" autoComplete="off" placeholder="Секретный ключ панели" value={tokenInput} onChange={e=>setTokenInput(e.target.value)}/>
+     <button className="btn btn-primary" type="submit">Войти</button>
+    </form>
+    <p className="text-xs text-muted">Ключ сохраняется только на время текущей вкладки браузера, а не в публичном коде GitHub.</p>
+    <a className="text-accent text-sm underline" target="_blank" rel="noopener noreferrer" href="https://github.com/shauallieve/ai-client-hunter#telegram-setup">Как подключить Telegram-бота</a>
+   </section>:page==='settings'?<section className="glass rounded-3xl p-6 md:p-8 max-w-3xl space-y-5">
+    <h3 className="text-2xl font-bold">Настройки</h3>
+    <label className="block">Минимальная релевантность: <b className="text-accent">{minScore}/100</b><input className="w-full mt-3" type="range" min="0" max="95" value={minScore} onChange={e=>setMinScore(Number(e.target.value))}/></label>
+    <label className="block">Твой профиль для откликов<textarea className="field min-h-32 mt-2" value={profile} onChange={e=>setProfile(e.target.value)}/></label>
+    <p className="text-muted text-sm">Мониторинг работает только там, где Telegram разрешает боту видеть сообщения. Новые запросы сохраняются автоматически; список обновляется раз в минуту при открытой вкладке.</p>
+    <button className="btn btn-primary" onClick={()=>setPage('leads')}>Готово</button>
+   </section>:<>
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+    {[['Telegram-заявки',leads.length],['С контактом',leads.filter(x=>x.contactUsername).length],['Сохранено',savedCount],['Отклик отправлен',contacted]].map(([label,num])=><div key={label} className="glass rounded-2xl p-4"><div className="text-muted text-xs">{label}</div><div className="text-3xl font-bold mt-2">{num}</div></div>)}</div>
+    {error&&<div className="border border-orange-800 rounded-xl p-3 mb-5 text-sm text-orange-200 flex gap-2"><AlertTriangle size={17}/>{error}</div>}
+    <div className="flex flex-wrap justify-between gap-2 mb-4"><div className="flex gap-2">
+      {([{id:'all',title:'Все'},{id:'saved',title:'Избранное'},{id:'contacted',title:'Откликнулся'}] as const).map(t=><button key={t.id} className={tab===t.id?'btn btn-primary':'btn'} onClick={()=>setTab(t.id)}>{t.title}</button>)}</div>
+      <select className="field !w-auto" value={sort} onChange={e=>setSort(e.target.value as 'score'|'recent')}><option value="recent">Новые сверху</option><option value="score">Сначала подходящие</option></select></div>
+    <div className="relative mb-3"><Search className="absolute top-3 left-3 text-muted" size={18}/><input className="field !pl-10" placeholder="Найти по тексту, чату или контакту" value={query} onChange={e=>setQuery(e.target.value)}/></div>
+    <p className="text-muted text-xs mb-4">Показано {shown.length} из {leads.length} · {updated?'Обновлено '+fmtDate(updated):'Ожидание'} {sources.map(s=>'· '+s.source+': '+s.count).join(' ')}</p>
+    <div className="grid lg:grid-cols-[minmax(0,1fr)_280px] gap-5 items-start">
+     <div className="space-y-3">{shown.length?shown.map(l=><article className="glass rounded-2xl p-5" key={l.id}>
+      <div className="flex justify-between items-start gap-3"><div className="min-w-0">
+       <div className="flex gap-2 flex-wrap mb-3"><span className="tag">Telegram</span><span className="tag">{l.sourceChat||'Чат'}</span></div>
+       <h3 className="font-bold text-lg">{l.title}</h3>
+       <p className="text-muted text-sm mt-2 leading-6 whitespace-pre-line line-clamp-5">{l.description}</p>
+      </div><div className="rounded-xl bg-[#202c26] shrink-0 px-3 py-2 text-center"><b className="text-accent text-xl">{l.score}</b><div className="text-[10px]">совпадение</div></div></div>
+      <div className="mt-4 rounded-xl bg-[#0a121c] border border-line p-3 flex flex-wrap justify-between items-center gap-3">
+        {l.contactUsername&&isTg(l.contactUrl)?<a className="text-accent font-semibold text-sm" href={l.contactUrl} target="_blank" rel="noopener noreferrer">@{l.contactUsername} · Написать в Telegram</a>:
+        <span className="text-muted text-xs">Прямой контакт не опубликован</span>}
+        <span className="text-muted text-xs flex gap-1 items-center"><Clock size={12}/>{fmtDate(l.published)}</span>
+      </div>
+      <div className="mt-4 flex gap-2 flex-wrap">
+       {isTg(l.url)&&<a className="btn text-xs flex items-center gap-1" href={l.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={14}/>Исходное сообщение</a>}
+       <button className="btn text-xs flex items-center gap-1" onClick={()=>mark(l.id,statuses[l.id]==='saved'?'new':'saved')}><Bookmark size={14}/>{statuses[l.id]==='saved'?'Сохранено':'Сохранить'}</button>
+       <button className="btn text-xs flex items-center gap-1" onClick={()=>reply(l)}><MessageCircle size={14}/>Подготовить отклик</button>
+       <button title="Удалить" className="btn text-xs" onClick={()=>void remove(l)}><Trash2 size={14}/></button>
+      </div>
+     </article>):<div className="glass rounded-2xl p-10 text-center"><Inbox className="mx-auto text-muted mb-3" size={38}/><b>Пока нет Telegram-заявок</b><p className="text-muted text-sm mt-2">Проверь настройку бота, добавь его в чат с заказами или перешли ему публичный запрос самостоятельно.</p></div>}</div>
+     <aside className="glass rounded-2xl p-5 lg:sticky lg:top-4 space-y-3"><h3 className="font-bold flex gap-2 items-center"><Send size={18} className="text-accent"/> Как поступают заявки?</h3>
+       <p className="text-muted text-sm leading-6">1. Бот получает новое сообщение в подключённом чате.</p>
+       <p className="text-muted text-sm leading-6">2. Если это запрос на разработку, сохраняет его.</p>
+       <p className="text-muted text-sm leading-6">3. Ты открываешь автора или исходный пост и отвечаешь вручную.</p>
+       <p className="text-muted text-xs border-t border-line pt-4">Telegram Bot API не умеет искать по всему Telegram и не раскрывает скрытые аккаунты. Сообщения сохраняются не более 30 дней.</p>
+       <a className="text-accent underline text-sm" href="https://github.com/shauallieve/ai-client-hunter#telegram-setup" target="_blank" rel="noopener noreferrer">Инструкция подключения</a>
+     </aside></div>
+   </>}
+   <footer className="text-muted text-xs pt-10 pb-6">AI Client Hunter · Telegram-only · Без массовой отправки сообщений</footer>
+  </main>
+  {selected&&<div className="fixed inset-0 bg-black/80 z-50 p-3 flex items-center justify-center" onMouseDown={e=>{if(e.target===e.currentTarget)setSelected(null)}}>
+   <div className="glass rounded-3xl p-6 w-full max-w-2xl max-h-[90vh] overflow-auto">
+    <div className="flex justify-between gap-3"><h3 className="text-xl font-bold">Отклик клиенту</h3><button className="btn" onClick={()=>setSelected(null)}><X size={17}/></button></div>
+    <p className="text-muted text-sm my-3">{selected.title}</p><textarea className="field min-h-64" value={draft} onChange={e=>setDraft(e.target.value)}/>
+    <div className="flex gap-2 flex-wrap mt-4"><button className="btn btn-primary flex items-center gap-2" onClick={()=>void copy()}><Copy size={15}/>Копировать</button>
+    {selected.contactUrl&&isTg(selected.contactUrl)&&<a className="btn" href={selected.contactUrl} target="_blank" rel="noopener noreferrer">Написать автору</a>}
+    <button className="btn flex items-center gap-1" onClick={()=>{mark(selected.id,'contacted');setSelected(null)}}><CheckCircle2 size={15}/>Отметить отправленным</button></div>
+    <p className="text-xs text-muted mt-3">Ты сам проверяешь текст и отправляешь сообщение. Приложение не рассылает сообщения людям.</p>
+   </div></div>}
  </div>;
 }
