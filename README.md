@@ -75,3 +75,8 @@ npx wrangler deploy
 
 Если Workers автоматически публикуется из GitHub, после изменения настроек
 в Cloudflare запусти redeploy последнего коммита.
+
+## Проверка новой версии после развёртывания
+
+Открой `/api/health`. Должен вернуться JSON: `{"ok":true,"service":"ai-client-hunter","version":"workers-api-v2"}`.
+Если вместо этого HTML, значит серверный Worker ещё не развернулся: проверь **Settings → Build** (репозиторий `shauallieve/ai-client-hunter`, ветка `main`, build `npm run build`, deploy `npx wrangler deploy`), затем **Deployments** и повторный запуск последнего коммита. Для `workers.dev` используй Workers Builds, не Pages.
