@@ -129,8 +129,7 @@ async def collect(config: dict) -> list[dict]:
 
 def submit(config: dict, leads: list[dict]) -> None:
     if not leads:
-        print("No relevant public job posts found this run.")
-        return
+        print("No relevant public job posts found this run; reporting completed search.")
     payload = json.dumps({"leads": leads}, ensure_ascii=False).encode("utf-8")
     request = Request(
         config["endpoint"] + "/api/telegram/import",
